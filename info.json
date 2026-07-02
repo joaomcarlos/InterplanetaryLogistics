@@ -1,0 +1,12 @@
+{
+  "name": "interplanetary-logistics",
+  "version": "0.1.0",
+  "title": "Interplanetary Logistics",
+  "author": "joaomcarlos",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0.0",
+    "space-age >= 2.0.0"
+  ],
+  "description": "Routes requester-chest and construction-alert shortages through enrolled space platforms."
+}
