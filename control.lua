@@ -25,24 +25,6 @@ local function on_removed(event)
   unregister_chest(event.entity)
 end
 
-local function remember_tab_selection(event)
-  local element = event.element
-  if not element or not element.valid or element.type ~= "tabbed-pane" then
-    return
-  end
-  local state = State.ensure()
-  local gui_tabs = state.gui_tabs[event.player_index] or {}
-  state.gui_tabs[event.player_index] = gui_tabs
-  if gui_tabs.rebuilding then return end
-  if element.name == "il-tabs" then
-    gui_tabs.main_tab_index = element.selected_tab_index or 1
-  elseif element.name == "il-platform-tabs" then
-    gui_tabs.platform_tab_index = element.selected_tab_index or 1
-  elseif element.name == "il-request-tabs" then
-    gui_tabs.request_tab_index = element.selected_tab_index or 1
-  end
-end
-
 local function parse_id(name, prefix)
   local value = string.match(name, "^" .. prefix .. "(%d+)$")
   return value and tonumber(value) or nil
@@ -67,22 +49,34 @@ local function on_gui_click(event)
     return
   end
 
+  local view = string.match(element.name or "", "^il%-nav%-(%a+)$")
+  if view then
+    Gui.set_view(player, view)
+    return
+  end
+
+  local selected_request = parse_id(element.name or "", "il%-request%-select%-")
+  if selected_request then
+    Gui.select_request(player, selected_request)
+    return
+  end
+
   local id = parse_id(element.name, "il%-approve%-")
   if id then
     Demands.approve(id, event.player_index, false)
-    Gui.refresh_structure(player)
+    Gui.refresh_request_structure(player)
     return
   end
   id = parse_id(element.name, "il%-deny%-")
   if id then
     Demands.deny(id, event.player_index)
-    Gui.refresh_structure(player)
+    Gui.refresh_request_structure(player)
     return
   end
   id = parse_id(element.name, "il%-reopen%-")
   if id then
     Demands.approve(id, event.player_index, false)
-    Gui.refresh_structure(player)
+    Gui.refresh_request_structure(player)
     return
   end
   id = parse_id(element.name, "il%-priority%-up%-")
@@ -107,7 +101,7 @@ local function on_gui_click(event)
     end
     enrolled = not enrolled
     Platforms.set_enrolled(player.force.index, id, enrolled)
-    Gui.refresh_structure(player)
+    Gui.refresh_fleet_structure(player)
     return
   end
   id = parse_id(element.name, "il%-platform%-pin%-")
@@ -161,7 +155,6 @@ script.on_event("il-toggle-dashboard-input", function(event)
 end)
 
 script.on_event(defines.events.on_gui_click, on_gui_click)
-script.on_event(defines.events.on_gui_selected_tab_changed, remember_tab_selection)
 local function rebuild_open_dashboard(event)
   local player = game.get_player(event.player_index)
   if player and player.gui.screen[Constants.dashboard_name] then Gui.build(player) end

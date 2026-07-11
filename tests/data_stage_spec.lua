@@ -48,9 +48,18 @@ assert(type(extended["shortcut/il-toggle-dashboard"].icon) == "string")
 assert(extended["custom-input/il-toggle-dashboard-input"].key_sequence == "ALT + I")
 assert(data.raw["gui-style"].default.il_dashboard_frame.parent == "frame")
 assert(data.raw["gui-style"].default.il_content_flow.parent == "vertical_flow")
-assert(data.raw["gui-style"].default.il_table_header_flow.parent == "horizontal_flow")
-assert(data.raw["gui-style"].default.il_scroll_pane.parent == "scroll_pane")
-assert(data.raw["gui-style"].default.il_list_row.height == 44)
-assert(data.raw["gui-style"].default.il_metric_frame.height == 54)
+assert(data.raw["gui-style"].default.il_main_content_frame.parent == "inside_shallow_frame")
+assert(data.raw["gui-style"].default.il_navigation_frame.parent == "inside_shallow_frame")
+assert(data.raw["gui-style"].default.il_table_header_frame.parent == "subheader_frame")
+assert(data.raw["gui-style"].default.il_scroll_pane.parent == "scroll_pane_in_shallow_frame")
+assert(data.raw["gui-style"].default.il_list_row.height == 48)
+assert(data.raw["gui-style"].default.il_metric_frame.height == 76)
+assert(data.raw["gui-style"].default.il_square_tool_button.width == 32)
+assert(data.raw["gui-style"].default.il_square_tool_button.height == 32)
+for name, style in pairs(data.raw["gui-style"].default) do
+  if string.match(name, "^il_") then
+    assert(type(style.parent) == "string", name .. " must inherit from a Factorio base style")
+  end
+end
 
 print("data_stage_spec: OK")

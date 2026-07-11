@@ -78,10 +78,11 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
-- The Fleet Monitor is the first main dashboard tab.
-- Automatic and manual dashboard refreshes must not reset tab selection, scroll position, or replace the open frame.
+- The Fleet Monitor is the first dashboard view.
+- Automatic and manual dashboard refreshes must not reset dashboard navigation, request selection, scroll position, or replace the open frame.
 - Native list views use one scrollbar per axis; Delivery Fleet is separate from Other Platforms and both are sorted by ship name.
 - Native Factorio GUI work is expected to be production-ready and highly polished by default; visual hierarchy, spacing, native styles, interaction states, responsive sizing, tooltips, empty states, and in-game QA are part of completion.
+- Dashboard controls that are visually square use square native utility-sprite buttons with localized tooltips; do not introduce a custom sprite-based design system.
 
 ## Project Overview
 

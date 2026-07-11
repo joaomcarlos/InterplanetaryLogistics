@@ -16,18 +16,20 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - `demands.lua` — Shortage scanning, request lifecycle, priority, approval, suppression, and retirement
 - `router.lua` — Reservation-aware source ranking, ETA/pin-aware platform matching, and dispatch delegation
 - `platforms.lua` — Enrollment, ETA/status/stuck monitoring, route pinning, ready signals, temporary schedules, request sections, return cargo, and transfer lifecycle
-- `gui.lua` — High-volume dashboard with Fleet Monitor first; Delivery Fleet/Other Platforms and Active/Needs Attention subviews; Destinations and History; one scroll owner per leaf list
+- `gui.lua` — High-volume dashboard with Fleet Monitor first; native navigation views for Fleet, Requests, Destinations, and History; Requests includes a fixed detail panel; one scroll owner per visible list
 
 ## Work Guidance
 
-- Fleet Monitor must remain the first main tab. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset tabs, or move scroll position.
-- Never nest vertical scroll panes. Keep summaries and column headers outside the single leaf-list scroll pane.
-- All tabbed panes must use a fixed `height` or `maximal_height` constraint, not `vertically_stretchable = true`. Setting `vertically_stretchable` to `"on"` when tab content is also stretchable creates a circular layout dependency in `TabbedPane::setSize` that crashes the game with a stack overflow.
+- Fleet Monitor must remain the first dashboard view. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset navigation or request selection, or move scroll position.
+- Never nest vertical scroll panes. Keep summaries and column headers outside the single list scroll pane for each visible view.
+- Do not use nested tabbed panes for dashboard navigation. Native button navigation keeps the layout tree shallow and avoids the engine sizing recursion observed in `TabbedPane::setSize`.
 - Every custom GUI style must specify a `parent` to inherit proper default sizing from Factorio's base styles.
 - Treat cohesive native styles, visual hierarchy, consistent spacing, readable density, interaction states, tooltips, empty states, and responsive sizing as required implementation work, not optional follow-up polish.
-- Delivery Fleet and Other Platforms are separate views sorted by platform name. Requests are ordered by priority, workflow state, then id.
+- Use native utility sprites for 32 x 32 row actions and preserve rectangular buttons for text-heavy primary actions. Apply consistent blue, green, orange, red, and muted text colors to statuses, ETAs, metrics, and selected request context.
+- Centralize width budgets in `layout()` so the navigation rail, list columns, scroll bar, and request detail panel always fit inside the frame at supported UI scales.
+- Delivery Fleet and Other Platforms are separate sections sorted by platform name. Requests are ordered by priority, workflow state, then id; selecting a request preserves its detail panel context.
 - Request route cells show `Routing...` until `request.source` resolves; never show the demand origin as a planet.
-- Enrollment clicks update controls in place so the active tabs and scroll position remain stable.
+- Enrollment clicks update controls in place so dashboard navigation and scroll position remain stable.
 - Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
 - Dispatch order is deterministic: priority, creation tick, then request id.
 - Initialize every persistent field in `State.ensure()`.
