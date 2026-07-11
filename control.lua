@@ -178,26 +178,43 @@ script.on_event(defines.events.on_gui_closed, function(event)
 end)
 
 script.on_event(defines.events.on_tick, function(event)
+  local maintenance_tick = false
+  local maintenance_active = Platforms.monitor_active()
+    or Platforms.fleet_refresh_active()
+    or Gui.refresh_active()
+  if event.tick % Constants.monitor_interval == Constants.monitor_offset then
+    if not maintenance_active then Platforms.start_monitor() end
+    maintenance_tick = true
+  elseif event.tick % Constants.monitor_interval == Constants.fleet_refresh_offset then
+    if not maintenance_active then Platforms.start_fleet_refresh() end
+    maintenance_tick = true
+  elseif event.tick % Constants.gui_refresh_interval == Constants.gui_refresh_offset then
+    if not maintenance_active then Gui.start_refresh() end
+    maintenance_tick = true
+  end
+
+  if Platforms.monitor_active() then
+    Platforms.step_monitor(Constants.monitor_work_per_tick)
+    maintenance_tick = true
+  elseif Platforms.fleet_refresh_active() then
+    Platforms.step_fleet_refresh(Constants.fleet_work_per_tick)
+    maintenance_tick = true
+  elseif Gui.refresh_active() then
+    Gui.step_refresh(Constants.gui_work_per_tick)
+    maintenance_tick = true
+  end
+
   local interval = settings.global["il-scan-interval"].value
-  if event.tick % interval == 0 then
+  if not maintenance_tick and event.tick % interval == 0 then
     Demands.start_scan()
   end
   local scan_finished = false
-  if Demands.scan_active() then
+  if not maintenance_tick and Demands.scan_active() then
     scan_finished = Demands.step_scan(Constants.scan_work_per_tick)
     if scan_finished then Demands.start_process() end
   end
-  if not scan_finished and Demands.process_active() then
+  if not maintenance_tick and not scan_finished and Demands.process_active() then
     Demands.step_process(Constants.process_work_per_tick)
-  end
-  if event.tick % Constants.monitor_interval == Constants.monitor_offset then
-    Platforms.monitor()
-  end
-  if event.tick % Constants.monitor_interval == Constants.fleet_refresh_offset then
-    Platforms.refresh_fleet()
-  end
-  if event.tick % Constants.gui_refresh_interval == Constants.gui_refresh_offset then
-    Gui.refresh_open()
   end
 end)
 

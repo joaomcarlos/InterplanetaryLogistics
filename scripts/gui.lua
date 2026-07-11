@@ -498,6 +498,41 @@ function Gui.refresh_open()
   for _, player in pairs(game.connected_players or {}) do Gui.refresh_player(player) end
 end
 
+function Gui.start_refresh()
+  local state = State.ensure()
+  local players = {}
+  for _, player in pairs(game.connected_players or {}) do
+    if player.valid then players[#players + 1] = player.index end
+  end
+  table.sort(players)
+  state.gui_refresh_job = {players = players, index = 1}
+  return true
+end
+
+function Gui.refresh_active()
+  return State.ensure().gui_refresh_job ~= nil
+end
+
+function Gui.step_refresh(budget)
+  local state = State.ensure()
+  local job = state.gui_refresh_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.gui_work_per_tick)
+  local processed = 0
+  while processed < budget do
+    local player_index = job.players[job.index]
+    if not player_index then
+      state.gui_refresh_job = nil
+      break
+    end
+    local player = game.get_player(player_index)
+    if player and player.valid then Gui.refresh_player(player) end
+    job.index = job.index + 1
+    processed = processed + 1
+  end
+  return state.gui_refresh_job == nil
+end
+
 function Gui.close(player)
   local frame = player.gui.screen[dashboard_name]
   if frame then frame.destroy() end

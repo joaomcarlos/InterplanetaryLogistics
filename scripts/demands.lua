@@ -321,6 +321,7 @@ local function step_alert_context(context, budget, configured, needed)
         table.sort(context.aggregate_keys)
         context.aggregate_index = 1
         context.phase = "publish"
+        return false, processed
       else
         local alerts_by_type = context.alerts_by_surface[surface_index]
         context.alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
@@ -329,8 +330,9 @@ local function step_alert_context(context, budget, configured, needed)
       end
     end
 
-    if context.alerts then
-      local alert = context.alerts[context.alert_index]
+    local alerts = context.alerts
+    if context.phase == "alerts" and alerts then
+      local alert = alerts[context.alert_index]
       if not alert then
         context.alerts = nil
       else
@@ -467,6 +469,7 @@ function Demands.step_scan(budget)
         table.sort(job.group_keys)
         job.group_index = 1
         job.phase = "publish"
+        return false
       else
         local chest = game.get_entity_by_unit_number(unit_number)
         if chest and chest.valid and chest.name == Constants.chest_name then
@@ -481,6 +484,7 @@ function Demands.step_scan(budget)
       local key = job.group_keys[job.group_index]
       if not key then
         job.phase = "alerts"
+        return false
       else
         publish_chest_group(job.groups[key], job.needed)
         job.group_index = job.group_index + 1
@@ -494,6 +498,7 @@ function Demands.step_scan(budget)
         table.sort(job.retire_keys)
         job.retire_index = 1
         job.phase = "retire"
+        return false
       else
         if not job.alert_context then
           local force = game.forces[work.force_index]
@@ -504,6 +509,7 @@ function Demands.step_scan(budget)
             job.alert_index = job.alert_index + 1
           end
           processed = processed + 1
+          return state.scan_job == nil
         else
           local done, used = step_alert_context(job.alert_context, budget - processed, job.configured, job.needed)
           processed = processed + used
@@ -511,6 +517,7 @@ function Demands.step_scan(budget)
             job.alert_context = nil
             job.alert_index = job.alert_index + 1
           end
+          return state.scan_job == nil
         end
       end
     elseif job.phase == "retire" then

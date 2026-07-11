@@ -110,7 +110,18 @@ local function test_scan_scheduler_is_bounded()
   settings = {global = { ["il-auto-approve-seconds"] = {value = 30}, ["il-source-reserve"] = {value = 0} }}
   defines = {alert_type = {no_material_for_construction = 1}}
   local surface = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
-  local force = {valid = true, index = 1, players = {}}
+  local prototype = {valid = true, name = "steel-chest", items_to_place_this = {{name = "steel-chest", count = 1}}}
+  local player = {
+    valid = true,
+    index = 1,
+    get_alerts = function()
+      return {[1] = {[defines.alert_type.no_material_for_construction] = {
+        {prototype = prototype, position = {x = 1, y = 1}},
+        {prototype = prototype, position = {x = 2, y = 2}}
+      }}}
+    end
+  }
+  local force = {valid = true, index = 1, players = {player}}
   local chest = {
     valid = true,
     name = "interplanetary-requester-chest",
@@ -137,6 +148,7 @@ local function test_scan_scheduler_is_bounded()
   assert(Demands.scan_active(), "scan should remain queued after one budget unit")
   while Demands.scan_active() do Demands.step_scan(1) end
   assert_equal(state.scan_job, nil, "completed scan should clear its job")
+  assert(state.request_by_key["alert|1|1|steel-chest|normal"], "alert scan should finish without losing its context")
   state.requests[1] = {id = 1, status = "queued", priority = 0, auto_approve_tick = 100}
   state.next_request_id = 2
   assert(Demands.start_process(), "scheduler should accept request processing")

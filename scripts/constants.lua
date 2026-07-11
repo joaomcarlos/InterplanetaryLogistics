@@ -11,8 +11,11 @@ return {
   fleet_refresh_offset = 30,
   gui_refresh_interval = 120,
   gui_refresh_offset = 15,
-  scan_work_per_tick = 8,
-  process_work_per_tick = 4,
+  scan_work_per_tick = 1,
+  process_work_per_tick = 1,
+  monitor_work_per_tick = 1,
+  fleet_work_per_tick = 1,
+  gui_work_per_tick = 1,
   stuck_timeout = 60 * 60 * 3,
   default_leg_ticks = 60 * 60 * 5,
   active_statuses = {

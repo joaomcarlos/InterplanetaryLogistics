@@ -394,43 +394,75 @@ function Platforms.finish(request, status, reason)
   State.add_history(request, status, reason)
 end
 
-function Platforms.monitor()
+local function monitor_transfer(state, request_id)
+  local request = state.requests[request_id]
+  local transfer = state.active_transfers[request_id]
+  if not request or not transfer then
+    state.active_transfers[request_id] = nil
+    State.release_reservation(request_id)
+    if transfer then state.platform_transfers[transfer.platform_index] = nil end
+  else
+    local force = game.forces[transfer.force_index]
+    local platform = Util.get_platform(force, transfer.platform_index)
+    if not platform or not platform.hub or not platform.hub.valid then
+      Platforms.finish(request, "failed", "Enrolled platform is no longer available")
+    else
+      local inventory = platform.hub.get_main_inventory()
+      local count = inventory and inventory.get_item_count(Util.item_id(request.item, request.quality)) or 0
+      local location = platform.space_location and platform.space_location.name
+      if count >= transfer.target_count then
+        transfer.loaded_full = true
+        request.status = "delivering"
+      elseif location == transfer.destination and count <= transfer.baseline_count then
+        if transfer.loaded_full then
+          Platforms.finish(request, "completed", "Cargo delivered to destination")
+        else
+          Platforms.finish(request, "failed", "Platform reached the destination without the full cargo")
+        end
+      elseif game.tick - transfer.started_tick > Constants.transfer_timeout then
+        Platforms.finish(request, "failed", "Transfer timed out")
+      end
+    end
+  end
+end
+
+function Platforms.start_monitor()
   local state = State.ensure()
   local ids = {}
   for request_id in pairs(state.active_transfers) do
     ids[#ids + 1] = request_id
   end
-  for _, request_id in pairs(ids) do
-    local request = state.requests[request_id]
-    local transfer = state.active_transfers[request_id]
-    if not request or not transfer then
-      state.active_transfers[request_id] = nil
-      State.release_reservation(request_id)
-      if transfer then state.platform_transfers[transfer.platform_index] = nil end
-    else
-      local force = game.forces[transfer.force_index]
-      local platform = Util.get_platform(force, transfer.platform_index)
-      if not platform or not platform.hub or not platform.hub.valid then
-        Platforms.finish(request, "failed", "Enrolled platform is no longer available")
-      else
-        local inventory = platform.hub.get_main_inventory()
-        local count = inventory and inventory.get_item_count(Util.item_id(request.item, request.quality)) or 0
-        local location = platform.space_location and platform.space_location.name
-        if count >= transfer.target_count then
-          transfer.loaded_full = true
-          request.status = "delivering"
-        elseif location == transfer.destination and count <= transfer.baseline_count then
-          if transfer.loaded_full then
-            Platforms.finish(request, "completed", "Cargo delivered to destination")
-          else
-            Platforms.finish(request, "failed", "Platform reached the destination without the full cargo")
-          end
-        elseif game.tick - transfer.started_tick > Constants.transfer_timeout then
-          Platforms.finish(request, "failed", "Transfer timed out")
-        end
-      end
+  table.sort(ids)
+  state.monitor_job = {ids = ids, index = 1}
+  return true
+end
+
+function Platforms.monitor_active()
+  return State.ensure().monitor_job ~= nil
+end
+
+function Platforms.step_monitor(budget)
+  local state = State.ensure()
+  local job = state.monitor_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.monitor_work_per_tick)
+  local processed = 0
+  while processed < budget do
+    local request_id = job.ids[job.index]
+    if not request_id then
+      state.monitor_job = nil
+      break
     end
+    monitor_transfer(state, request_id)
+    job.index = job.index + 1
+    processed = processed + 1
   end
+  return state.monitor_job == nil
+end
+
+function Platforms.monitor()
+  Platforms.start_monitor()
+  while Platforms.monitor_active() do Platforms.step_monitor(math.huge) end
 end
 
 local function platform_snapshot(platform, force_index)
@@ -482,23 +514,56 @@ local function platform_snapshot(platform, force_index)
   }
 end
 
-function Platforms.refresh_fleet()
+function Platforms.start_fleet_refresh()
   local state = State.ensure()
-  local seen = {}
+  local platforms = {}
   for _, force in pairs(game.forces) do
-    local platforms = {}
     for _, platform in pairs(force.platforms or {}) do
-      if platform.valid then platforms[#platforms + 1] = platform end
-    end
-    table.sort(platforms, function(a, b) return a.index < b.index end)
-    for _, platform in ipairs(platforms) do
-      state.platform_status[platform.index] = platform_snapshot(platform, force.index)
-      seen[platform.index] = true
+      if platform.valid then platforms[#platforms + 1] = {force_index = force.index, platform_index = platform.index} end
     end
   end
-  for platform_index in pairs(state.platform_status) do
-    if not seen[platform_index] then state.platform_status[platform_index] = nil end
+  table.sort(platforms, function(a, b)
+    if a.platform_index == b.platform_index then return a.force_index < b.force_index end
+    return a.platform_index < b.platform_index
+  end)
+  state.fleet_job = {platforms = platforms, index = 1, seen = {}}
+  return true
+end
+
+function Platforms.fleet_refresh_active()
+  return State.ensure().fleet_job ~= nil
+end
+
+function Platforms.step_fleet_refresh(budget)
+  local state = State.ensure()
+  local job = state.fleet_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.fleet_work_per_tick)
+  local processed = 0
+  while processed < budget do
+    local entry = job.platforms[job.index]
+    if not entry then
+      for platform_index in pairs(state.platform_status) do
+        if not job.seen[platform_index] then state.platform_status[platform_index] = nil end
+      end
+      state.fleet_job = nil
+      break
+    end
+    local force = game.forces[entry.force_index]
+    local platform = Util.get_platform(force, entry.platform_index)
+    if platform then
+      state.platform_status[platform.index] = platform_snapshot(platform, entry.force_index)
+      job.seen[platform.index] = true
+    end
+    job.index = job.index + 1
+    processed = processed + 1
   end
+  return state.fleet_job == nil
+end
+
+function Platforms.refresh_fleet()
+  Platforms.start_fleet_refresh()
+  while Platforms.fleet_refresh_active() do Platforms.step_fleet_refresh(math.huge) end
 end
 
 function Platforms.cancel(request, reason)
