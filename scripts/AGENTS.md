@@ -6,26 +6,34 @@ All runtime logic for the Interplanetary Logistics mod. Modules are loaded via `
 
 ## Ownership
 
-Each module owns a single responsibility. Cross-module calls flow downward: `control` → `demands` → `router` → `platforms` → `state`/`util`. `gui` reads state but does not mutate request/transfer lifecycle.
+Each module owns a single responsibility. Cross-module calls flow downward: `control` → `demands` → `router` → `platforms` → `state`/`util`. `gui` reads state and calls public demand/platform actions from GUI events.
 
 ## Local Contracts
 
-- `constants.lua` — Central config values: entity names, timeouts, active status set, schema version, history limit
-- `state.lua` — All persistent state under `storage.interplanetary_logistics`. `State.ensure()` initializes the schema. `State.rebuild_chests()` rescans surfaces. `State.add_history()` appends capped history entries
-- `util.lua` — Pure helpers: deep copy, item ID/signal constructors, surface location resolution, platform lookup, tick formatting, sorted iteration, GPS strings, ghost detection, sprite resolution
-- `demands.lua` — Demand scanning (chest shortages + construction alerts), request lifecycle (create/queue/approve/deny/cancel), auto-approve timer, unseen-request retirement
-- `router.lua` — Source planet ranking by reliability score + provider stock, platform matching via `Platforms.find_matching`, dispatch delegation
-- `platforms.lua` — Platform enrollment, capacity checks, schedule manipulation (temporary record append/remove), request sections on hub and landing pad, transfer monitoring, completion/failure/timeout handling
-- `gui.lua` — Dashboard GUI: tabbed pane with compact request-table, chests, platforms, and history tabs. Request-table route cells use planet icons; source is the routed `request.source` or a neutral "Any planet" placeholder, never the demand origin label. Tab selection persistence. No request mutation — only reads state and calls `Demands`/`Platforms` on button clicks
+- `constants.lua` — Entity names, scan/monitor/ETA timeouts, active statuses, schema version, and history limit
+- `state.lua` — Persistent requests, reservations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
+- `util.lua` — Pure item, signal, surface, route, platform, formatting, sorting, GPS, ghost, and sprite helpers
+- `demands.lua` — Shortage scanning, request lifecycle, priority, approval, suppression, and retirement
+- `router.lua` — Reservation-aware source ranking, ETA/pin-aware platform matching, and dispatch delegation
+- `platforms.lua` — Enrollment, ETA/status/stuck monitoring, route pinning, ready signals, temporary schedules, request sections, return cargo, and transfer lifecycle
+- `gui.lua` — High-volume dashboard with Fleet Monitor first; Delivery Fleet/Other Platforms and Active/Needs Attention subviews; Destinations and History; one scroll owner per leaf list
 
 ## Work Guidance
 
-- The compact request-table shows `Routing...` in the From cell until `request.source` is resolved; it must never display the demand origin label as a planet.
-- Platform enrollment rows are a compact horizontal table. Enrollment clicks update the existing controls in place so the active tabs and scroll position are preserved.
-- New modules must be `require`-able from `control.lua` and listed here
-- Any new persistent state field must be initialized in `State.ensure()`
-- Schedule manipulation must only add/remove records with `temporary = true`
-- Iteration over game entities that affects state must be sorted for determinism
+- Fleet Monitor must remain the first main tab. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset tabs, or move scroll position.
+- Never nest vertical scroll panes. Keep summaries and column headers outside the single leaf-list scroll pane.
+- Treat cohesive native styles, visual hierarchy, consistent spacing, readable density, interaction states, tooltips, empty states, and responsive sizing as required implementation work, not optional follow-up polish.
+- Delivery Fleet and Other Platforms are separate views sorted by platform name. Requests are ordered by priority, workflow state, then id.
+- Request route cells show `Routing...` until `request.source` resolves; never show the demand origin as a planet.
+- Enrollment clicks update controls in place so the active tabs and scroll position remain stable.
+- Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
+- Dispatch order is deterministic: priority, creation tick, then request id.
+- Initialize every persistent field in `State.ensure()`.
+- Only add or remove schedule records with `temporary = true`; never mutate permanent records.
+- Sort iteration that affects game state.
+- Keep periodic monitoring single-owned: `Platforms.monitor()` runs from the control scheduler, not from both scan processing and the monitor interval.
+- Keep expensive provider/network queries cached for the current tick when multiple requests share the lookup; subtract live reservations after reading cached stock.
+- Keep normal alert scanning silent; diagnostics must not build log strings inside high-volume loops.
 
 ## Verification
 

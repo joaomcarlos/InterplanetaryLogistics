@@ -25,5 +25,20 @@ data:extend({
     minimum_value = 0,
     maximum_value = 1000000,
     order = "c"
+  },
+  {
+    type = "bool-setting",
+    name = "il-enable-ready-signal",
+    setting_type = "runtime-global",
+    default_value = false,
+    order = "d"
+  },
+  {
+    type = "string-setting",
+    name = "il-ready-signal",
+    setting_type = "runtime-global",
+    default_value = "signal-green",
+    allowed_values = {"signal-green", "signal-check", "signal-R"},
+    order = "e"
   }
 })

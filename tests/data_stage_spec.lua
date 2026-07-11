@@ -28,7 +28,8 @@ data = {
         pick_sound = {filename = "pick.ogg"},
         drop_sound = {filename = "drop.ogg"}
       }
-    }
+    },
+    ["gui-style"] = {default = {}}
   },
   extend = function(_, prototypes)
     for _, prototype in ipairs(prototypes) do
@@ -45,5 +46,9 @@ assert(extended["item/interplanetary-requester-chest"].place_result == "interpla
 assert(extended["recipe/interplanetary-requester-chest"].enabled == true)
 assert(type(extended["shortcut/il-toggle-dashboard"].icon) == "string")
 assert(extended["custom-input/il-toggle-dashboard-input"].key_sequence == "ALT + I")
+assert(data.raw["gui-style"].default.il_dashboard_frame.parent == "frame")
+assert(data.raw["gui-style"].default.il_scroll_pane.parent == "scroll_pane")
+assert(data.raw["gui-style"].default.il_list_row.height == 44)
+assert(data.raw["gui-style"].default.il_metric_frame.height == 54)
 
 print("data_stage_spec: OK")

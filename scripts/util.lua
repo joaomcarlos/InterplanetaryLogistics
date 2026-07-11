@@ -55,6 +55,39 @@ function Util.format_ticks(ticks)
   return math.floor(minutes / 60) .. "h " .. (minutes % 60) .. "m"
 end
 
+function Util.route_locations(platform)
+  local locations = {}
+  local seen = {}
+  local schedule = platform and platform.schedule
+  for _, record in pairs(schedule and schedule.records or {}) do
+    if not record.temporary and record.station and not seen[record.station] then
+      seen[record.station] = true
+      locations[#locations + 1] = record.station
+    end
+  end
+  return locations
+end
+
+function Util.route_pairs(platform)
+  local locations = Util.route_locations(platform)
+  local pairs_list = {}
+  if #locations < 2 then
+    return pairs_list
+  end
+  for index, source in ipairs(locations) do
+    for _, destination in ipairs(locations) do
+      if source ~= destination then
+        pairs_list[#pairs_list + 1] = {source = source, destination = destination}
+      end
+    end
+  end
+  table.sort(pairs_list, function(a, b)
+    if a.source == b.source then return a.destination < b.destination end
+    return a.source < b.source
+  end)
+  return pairs_list
+end
+
 function Util.sorted_values(dictionary, predicate)
   local values = {}
   for _, value in pairs(dictionary or {}) do

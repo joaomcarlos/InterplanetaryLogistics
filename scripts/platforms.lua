@@ -4,6 +4,51 @@ local Util = require("scripts.util")
 
 local Platforms = {}
 
+local function setting_value(name, default)
+  local setting = settings and settings.global and settings.global[name]
+  if setting == nil then return default end
+  if type(setting) == "table" then return setting.value end
+  return setting
+end
+
+local function endpoint_name(endpoint)
+  return endpoint and endpoint.name or nil
+end
+
+local function estimate_current_leg(platform, target)
+  local connection = platform.space_connection
+  local distance = platform.distance
+  if not connection or distance == nil then return nil end
+  local remaining
+  if target == endpoint_name(connection.to) then
+    remaining = 1 - distance
+  elseif target == endpoint_name(connection.from) then
+    remaining = distance
+  else
+    return nil
+  end
+  local speed = math.abs(platform.speed or 0)
+  if speed <= 0 then return nil end
+  return math.max(0, math.ceil(remaining * (connection.length or 1) / speed))
+end
+
+function Platforms.estimate_ticks_to(platform, target)
+  if not platform or not platform.valid then return nil end
+  if platform.space_location and platform.space_location.name == target then return 0 end
+  local current_leg = estimate_current_leg(platform, target)
+  if current_leg then return current_leg end
+  local schedule = platform.schedule
+  local records = schedule and schedule.records or {}
+  local start = schedule and schedule.current or 1
+  for offset = 0, #records - 1 do
+    local index = ((start + offset - 1) % #records) + 1
+    if records[index].station == target then
+      return (offset + 1) * Constants.default_leg_ticks
+    end
+  end
+  return nil
+end
+
 local function request_group(request_id)
   return "Interplanetary Logistics #" .. request_id
 end
@@ -27,6 +72,17 @@ local function item_condition(request, comparator, constant)
       first_signal = Util.item_signal(request.item, request.quality),
       comparator = comparator,
       constant = constant
+    }
+  }
+end
+
+local function ready_condition()
+  return {
+    type = "circuit",
+    condition = {
+      first_signal = {type = "virtual", name = setting_value("il-ready-signal", "signal-green")},
+      comparator = ">",
+      constant = 0
     }
   }
 end
@@ -112,6 +168,34 @@ function Platforms.set_enrolled(force_index, platform_index, enrolled)
   state.enrolled[force_index][platform_index] = enrolled or nil
 end
 
+function Platforms.toggle_ready_signal(force_index, platform_index)
+  local options = State.get_platform_options(force_index, platform_index)
+  options.ready_signal = not options.ready_signal
+  return options.ready_signal
+end
+
+function Platforms.pin_routes(force_index, platform)
+  local routes = Util.route_pairs(platform)
+  local all_pinned = #routes > 0
+  for _, route in ipairs(routes) do
+    if State.get_route_preference(force_index, route.source, route.destination) ~= platform.index then
+      all_pinned = false
+      break
+    end
+  end
+  for _, route in ipairs(routes) do
+    State.set_route_preference(force_index, route.source, route.destination, all_pinned and nil or platform.index)
+  end
+  return not all_pinned
+end
+
+function Platforms.is_pinned(force_index, platform)
+  for _, route in ipairs(Util.route_pairs(platform)) do
+    if State.get_route_preference(force_index, route.source, route.destination) == platform.index then return true end
+  end
+  return false
+end
+
 function Platforms.find_matching(request, force, source, destination)
   local state = State.ensure()
   local enrolled = state.enrolled[force.index] or {}
@@ -122,12 +206,19 @@ function Platforms.find_matching(request, force, source, destination)
       if schedule_has_location(schedule, source) and schedule_has_location(schedule, destination) then
         local capacity = platform_capacity(platform, request)
         if capacity >= request.amount then
-          matches[#matches + 1] = {platform = platform, capacity = capacity}
+          matches[#matches + 1] = {
+            platform = platform,
+            capacity = capacity,
+            eta = Platforms.estimate_ticks_to(platform, source) or math.huge,
+            pinned = State.get_route_preference(force.index, source, destination) == platform.index
+          }
         end
       end
     end
   end
   table.sort(matches, function(a, b)
+    if a.pinned ~= b.pinned then return a.pinned end
+    if a.eta ~= b.eta then return a.eta < b.eta end
     if a.capacity == b.capacity then
       return a.platform.index < b.platform.index
     end
@@ -205,10 +296,14 @@ function Platforms.dispatch(request, platform, force)
     station = request.source,
     temporary = true,
     allows_unloading = false,
-    wait_conditions = {
-      item_condition(request, ">=", target),
-      {type = "time", compare_type = "or", ticks = Constants.source_wait_timeout}
-    }
+    wait_conditions = {item_condition(request, ">=", target)}
+  }
+  local options = State.get_platform_options(force.index, platform.index)
+  if setting_value("il-enable-ready-signal", false) or options.ready_signal then
+    records[source_index].wait_conditions[#records[source_index].wait_conditions + 1] = ready_condition()
+  end
+  records[source_index].wait_conditions[#records[source_index].wait_conditions + 1] = {
+    type = "time", compare_type = "or", ticks = Constants.source_wait_timeout
   }
   records[source_index + 1] = {
     station = request.destination,
@@ -245,6 +340,7 @@ function Platforms.dispatch(request, platform, force)
   request.status = "loading"
   request.dispatched_tick = game.tick
   request.last_reason = nil
+  request.eta_tick = game.tick + (Platforms.estimate_ticks_to(platform, request.destination) or Constants.default_leg_ticks)
   return true
 end
 
@@ -266,7 +362,18 @@ function Platforms.finish(request, status, reason)
     end
     state.platform_transfers[transfer.platform_index] = nil
     state.active_transfers[request.id] = nil
+    if status == "completed" and transfer.baseline_count > 0 then
+      state.recent_returns[transfer.platform_index] = {
+        item = transfer.item,
+        quality = transfer.quality,
+        amount = transfer.baseline_count,
+        source = transfer.source,
+        expires_tick = game.tick + Constants.default_leg_ticks * 2
+      }
+    end
   end
+
+  State.release_reservation(request.id)
 
   request.status = status
   request.completed_tick = game.tick
@@ -298,6 +405,8 @@ function Platforms.monitor()
     local transfer = state.active_transfers[request_id]
     if not request or not transfer then
       state.active_transfers[request_id] = nil
+      State.release_reservation(request_id)
+      if transfer then state.platform_transfers[transfer.platform_index] = nil end
     else
       local force = game.forces[transfer.force_index]
       local platform = Util.get_platform(force, transfer.platform_index)
@@ -324,10 +433,79 @@ function Platforms.monitor()
   end
 end
 
+local function platform_snapshot(platform, force_index)
+  local state = State.ensure()
+  local previous = state.platform_status[platform.index]
+  local request_id = state.platform_transfers[platform.index]
+  local request = request_id and state.requests[request_id]
+  local location = platform.space_location and platform.space_location.name
+  local distance = platform.distance
+  local changed = not previous or previous.location ~= location or previous.distance ~= distance
+    or previous.request_id ~= request_id
+  local last_progress_tick = changed and game.tick or (previous.last_progress_tick or game.tick)
+  local status = "idle"
+  local destination
+  if platform.paused then
+    status = "paused"
+  elseif request then
+    status = request.status == "loading" and "loading" or "delivering"
+    destination = request.status == "loading" and request.source or request.destination
+  elseif platform.space_connection then
+    status = "working"
+    local schedule = platform.schedule
+    local record = schedule and schedule.records and schedule.records[schedule.current or 1]
+    destination = record and record.station or nil
+  elseif state.recent_returns[platform.index] then
+    local returning = state.recent_returns[platform.index]
+    if game.tick <= returning.expires_tick and location ~= returning.source then
+      status = "returning"
+      destination = returning.source
+    else
+      state.recent_returns[platform.index] = nil
+    end
+  end
+  if request and game.tick - last_progress_tick > Constants.stuck_timeout then status = "stuck" end
+  return {
+    platform_index = platform.index,
+    force_index = force_index,
+    name = platform.name,
+    enrolled = Platforms.is_enrolled(force_index, platform.index),
+    status = status,
+    location = location,
+    destination = destination,
+    eta = destination and Platforms.estimate_ticks_to(platform, destination) or nil,
+    request_id = request_id,
+    last_progress_tick = last_progress_tick,
+    distance = distance,
+    speed = platform.speed or 0,
+    reason = status == "stuck" and "No platform progress detected" or nil
+  }
+end
+
+function Platforms.refresh_fleet()
+  local state = State.ensure()
+  local seen = {}
+  for _, force in pairs(game.forces) do
+    local platforms = {}
+    for _, platform in pairs(force.platforms or {}) do
+      if platform.valid then platforms[#platforms + 1] = platform end
+    end
+    table.sort(platforms, function(a, b) return a.index < b.index end)
+    for _, platform in ipairs(platforms) do
+      state.platform_status[platform.index] = platform_snapshot(platform, force.index)
+      seen[platform.index] = true
+    end
+  end
+  for platform_index in pairs(state.platform_status) do
+    if not seen[platform_index] then state.platform_status[platform_index] = nil end
+  end
+end
+
 function Platforms.cancel(request, reason)
   if State.ensure().active_transfers[request.id] then
     Platforms.finish(request, "cancelled", reason or "Request removed")
   else
+    State.release_reservation(request.id)
     request.status = "cancelled"
     request.completed_tick = game.tick
     request.last_reason = reason

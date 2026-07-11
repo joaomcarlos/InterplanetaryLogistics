@@ -34,6 +34,7 @@ local function create_request(key, data)
   request.created_tick = game.tick
   request.last_seen_tick = game.tick
   request.auto_approve_tick = auto_approve_tick()
+  request.priority = request.priority or 0
   state.requests[request.id] = request
   state.request_by_key[key] = request.id
   return request
@@ -207,20 +208,13 @@ local function scan_alerts(configured, needed)
     table.sort(players, function(a, b) return a.index < b.index end)
     for _, player in ipairs(players) do
       local alerts_by_surface = player.get_alerts({type = defines.alert_type.no_material_for_construction})
-      local surface_count = 0
-      for _ in pairs(alerts_by_surface) do surface_count = surface_count + 1 end
-      log("[IL] scan_alerts: force=" .. force.index .. " player=" .. player.index .. " surfaces_with_alerts=" .. surface_count)
       local seen = {}
       local aggregate = {}
       for surface_index, alerts_by_type in pairs(alerts_by_surface) do
         local alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
-        local alert_count = 0
-        local accepted_count = 0
-        for _ in pairs(alerts) do alert_count = alert_count + 1 end
         for _, alert in pairs(alerts) do
           local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
           if surface_idx and position and items then
-            accepted_count = accepted_count + 1
             for _, req in pairs(items) do
               local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
               if not seen[dedup_key] then
@@ -238,29 +232,10 @@ local function scan_alerts(configured, needed)
                 aggregate[agg_key] = entry
               end
             end
-          else
-            local tgt = alert.target
-            local tgt_name = tgt and tgt.valid and tgt.name or "nil"
-            local tgt_has_surface = tgt and tgt.valid and tgt.surface and "yes" or "no"
-            local tgt_has_item_req = 0
-            if tgt and tgt.valid and (tgt_name == "entity-ghost" or tgt_name == "item-request-proxy") and tgt.item_requests then
-              tgt_has_item_req = #tgt.item_requests
-            end
-            local proto_name = alert.prototype and alert.prototype.valid and alert.prototype.name or "nil"
-            local has_pos = alert.position and "yes" or "no"
-            log("[IL] alert rejected: surface=" .. surface_index ..
-                " target=" .. tgt_name ..
-                " target_surface=" .. tgt_has_surface ..
-                " target_item_req_count=" .. tostring(tgt_has_item_req) ..
-                " prototype=" .. proto_name ..
-                " has_position=" .. has_pos)
           end
         end
-        log("[IL] surface=" .. surface_index .. " total_alerts=" .. alert_count .. " accepted=" .. accepted_count)
       end
-      local agg_count = 0
       for _, entry in pairs(aggregate) do
-        agg_count = agg_count + 1
         local surface = game.get_surface(entry.surface_index)
         if surface then
           local key = table.concat({"alert", force.index, entry.surface_index, entry.item, entry.quality}, "|")
@@ -278,12 +253,8 @@ local function scan_alerts(configured, needed)
             current = 0,
             position = entry.position
           })
-          log("[IL] request created: key=" .. key .. " item=" .. entry.item .. " amount=" .. entry.amount .. " status=" .. (req and req.status or "nil"))
-        else
-          log("[IL] aggregate entry skipped (no surface): surface_index=" .. entry.surface_index .. " item=" .. entry.item)
         end
       end
-      log("[IL] scan_alerts done: force=" .. force.index .. " aggregate_entries=" .. agg_count)
     end
   end
 end
@@ -357,14 +328,28 @@ end
 
 function Demands.process()
   local state = State.ensure()
-  for _, request in pairs(state.requests) do
+  local requests = Util.sorted_values(state.requests)
+  table.sort(requests, function(a, b)
+    if (a.priority or 0) == (b.priority or 0) then
+      if (a.created_tick or 0) == (b.created_tick or 0) then return a.id < b.id end
+      return (a.created_tick or 0) < (b.created_tick or 0)
+    end
+    return (a.priority or 0) > (b.priority or 0)
+  end)
+  for _, request in ipairs(requests) do
     if request.status == "queued" and game.tick >= request.auto_approve_tick then
       Demands.approve(request.id, nil, true)
     elseif request.status == "approved" then
       Router.try_dispatch(request)
     end
   end
-  Platforms.monitor()
+end
+
+function Demands.set_priority(request_id, priority)
+  local request = State.ensure().requests[request_id]
+  if not request or not Constants.active_statuses[request.status] then return false end
+  request.priority = math.max(-1, math.min(1, priority or 0))
+  return true
 end
 
 return Demands

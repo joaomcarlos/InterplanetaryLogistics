@@ -3,6 +3,7 @@ local State = require("scripts.state")
 local Demands = require("scripts.demands")
 local Platforms = require("scripts.platforms")
 local Gui = require("scripts.gui")
+local Util = require("scripts.util")
 
 local function register_chest(entity)
   if entity and entity.valid and entity.name == Constants.chest_name and entity.unit_number then
@@ -32,10 +33,13 @@ local function remember_tab_selection(event)
   local state = State.ensure()
   local gui_tabs = state.gui_tabs[event.player_index] or {}
   state.gui_tabs[event.player_index] = gui_tabs
+  if gui_tabs.rebuilding then return end
   if element.name == "il-tabs" then
     gui_tabs.main_tab_index = element.selected_tab_index or 1
   elseif element.name == "il-platform-tabs" then
     gui_tabs.platform_tab_index = element.selected_tab_index or 1
+  elseif element.name == "il-request-tabs" then
+    gui_tabs.request_tab_index = element.selected_tab_index or 1
   end
 end
 
@@ -59,26 +63,41 @@ local function on_gui_click(event)
   elseif element.name == "il-refresh" then
     Demands.scan()
     Demands.process()
-    Gui.build(player)
+    Platforms.refresh_fleet()
+    Gui.refresh_structure(player)
     return
   end
 
   local id = parse_id(element.name, "il%-approve%-")
   if id then
     Demands.approve(id, event.player_index, false)
-    Gui.build(player)
+    Gui.refresh_structure(player)
     return
   end
   id = parse_id(element.name, "il%-deny%-")
   if id then
     Demands.deny(id, event.player_index)
-    Gui.build(player)
+    Gui.refresh_structure(player)
     return
   end
   id = parse_id(element.name, "il%-reopen%-")
   if id then
     Demands.approve(id, event.player_index, false)
-    Gui.build(player)
+    Gui.refresh_structure(player)
+    return
+  end
+  id = parse_id(element.name, "il%-priority%-up%-")
+  if id then
+    local request = State.ensure().requests[id]
+    if request then Demands.set_priority(id, (request.priority or 0) + 1) end
+    Gui.refresh_player(player)
+    return
+  end
+  id = parse_id(element.name, "il%-priority%-down%-")
+  if id then
+    local request = State.ensure().requests[id]
+    if request then Demands.set_priority(id, (request.priority or 0) - 1) end
+    Gui.refresh_player(player)
     return
   end
   id = parse_id(element.name, "il%-platform%-enrollment%-")
@@ -89,13 +108,27 @@ local function on_gui_click(event)
     end
     enrolled = not enrolled
     Platforms.set_enrolled(player.force.index, id, enrolled)
-    Gui.update_platform_enrollment(player, element, enrolled)
+    Gui.refresh_structure(player)
+    return
+  end
+  id = parse_id(element.name, "il%-platform%-pin%-")
+  if id then
+    local platform = Util.get_platform(player.force, id)
+    if platform then Platforms.pin_routes(player.force.index, platform) end
+    Gui.refresh_player(player)
+    return
+  end
+  id = parse_id(element.name, "il%-platform%-ready%-")
+  if id then
+    Platforms.toggle_ready_signal(player.force.index, id)
+    Gui.refresh_player(player)
   end
 end
 
 local function initialize()
   State.ensure()
   State.rebuild_chests()
+  Platforms.refresh_fleet()
 end
 
 script.on_init(initialize)
@@ -130,6 +163,12 @@ end)
 
 script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_selected_tab_changed, remember_tab_selection)
+local function rebuild_open_dashboard(event)
+  local player = game.get_player(event.player_index)
+  if player and player.gui.screen[Constants.dashboard_name] then Gui.build(player) end
+end
+script.on_event(defines.events.on_player_display_resolution_changed, rebuild_open_dashboard)
+script.on_event(defines.events.on_player_display_scale_changed, rebuild_open_dashboard)
 script.on_event(defines.events.on_gui_closed, function(event)
   if event.element and event.element.valid and event.element.name == Constants.dashboard_name then
     local player = game.get_player(event.player_index)
@@ -144,6 +183,13 @@ script.on_event(defines.events.on_tick, function(event)
   if event.tick % interval == 0 then
     Demands.scan()
     Demands.process()
+  end
+  if event.tick % Constants.monitor_interval == 0 then
+    Platforms.monitor()
+    Platforms.refresh_fleet()
+  end
+  if event.tick % Constants.gui_refresh_interval == 0 then
+    Gui.refresh_open()
   end
 end)
 

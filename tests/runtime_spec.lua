@@ -557,7 +557,10 @@ local function test_platform_commandeering()
   reset_modules()
   storage = {}
   defines = {}
-  settings = {global = {}}
+  settings = {global = {
+    ["il-enable-ready-signal"] = {value = false},
+    ["il-ready-signal"] = {value = "signal-green"}
+  }}
 
   local cargo_count = 10
   local inventory = {
@@ -628,6 +631,7 @@ local function test_platform_commandeering()
   assert(dispatched, reason)
   assert_equal(#platform.schedule.records, 4, "dispatch should append two temporary records")
   assert_equal(platform.schedule.current, 3, "dispatch should activate source record")
+  assert_equal(#platform.schedule.records[3].wait_conditions, 2, "default pickup should use cargo and timeout conditions")
   assert_equal(hub_sections.sections[1].filter.min, 60, "hub request should preserve baseline cargo")
   assert_equal(pad_sections.sections[1].filter.min, 70, "pad request should preserve baseline cargo")
 
@@ -667,7 +671,10 @@ local function test_platform_commandeering()
   assert_equal(mismatch_reason, "Destination has no cargo landing pad", "network mismatch should explain dispatch failure")
 
   second.logistic_network_id = 7
+  State.get_platform_options(1, platform.index).ready_signal = true
   assert(Platforms.dispatch(second, platform, force))
+  assert_equal(platform.schedule.records[3].wait_conditions[2].type, "circuit", "platform ready option should add a circuit condition")
+  assert_equal(platform.schedule.records[3].wait_conditions[2].condition.first_signal.name, "signal-green", "ready condition should use the configured signal")
   platform.space_location = {name = "nauvis"}
   game.tick = 300
   Platforms.monitor()
@@ -675,6 +682,46 @@ local function test_platform_commandeering()
   assert_equal(#platform.schedule.records, 2, "failed transfer should also restore the route")
   assert_equal(#hub_sections.sections, 0, "failed transfer should remove hub request section")
   assert_equal(#pad_sections.sections, 0, "failed transfer should remove landing-pad request section")
+end
+
+local function test_fleet_preferences_eta_and_reservations()
+  reset_modules()
+  storage = {}
+  settings = {global = {}}
+  game = {tick = 10}
+
+  local inventory = {get_insertable_count = function() return 1000 end}
+  local function platform(index, name, location)
+    return {
+      valid = true,
+      index = index,
+      name = name,
+      hub = {valid = true, get_main_inventory = function() return inventory end},
+      space_location = {name = location},
+      schedule = {current = 1, records = {
+        {station = "nauvis"},
+        {station = "fulgora"}
+      }}
+    }
+  end
+  local fast = platform(1, "Fast", "fulgora")
+  local pinned = platform(2, "Pinned", "nauvis")
+  local force = {valid = true, index = 1, platforms = {pinned, fast}}
+  local State = require("scripts.state")
+  local Platforms = require("scripts.platforms")
+  local state = State.ensure()
+  state.enrolled[1] = {[1] = true, [2] = true}
+  local request = {id = 1, item = "iron-plate", quality = "normal", amount = 50}
+
+  assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 1, "platform already at source should have the earliest ETA")
+  State.set_route_preference(1, "fulgora", "nauvis", 2)
+  assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 2, "pinned platform should override ETA ranking")
+
+  request.source = "fulgora"
+  State.reserve(request)
+  assert_equal(State.reserved_count("fulgora", "iron-plate", "normal"), 50, "active request should reserve source stock")
+  State.release_reservation(1)
+  assert_equal(State.reserved_count("fulgora", "iron-plate", "normal"), 0, "finishing a request should release source stock")
 end
 
 local function test_router_rank_and_dispatch()
@@ -704,6 +751,7 @@ local function test_router_rank_and_dispatch()
   local fulgora_silo = {valid = true, position = {x = 0, y = 0}}
 
   local cargo_count = 0
+  local provider_queries = 0
   local inventory = {
     get_item_count = function() return cargo_count end,
     get_insertable_count = function() return 1000 end
@@ -732,7 +780,10 @@ local function test_router_rank_and_dispatch()
   }
   local fulgora_surface = {
     valid = true, index = 2, name = "fulgora", planet = {name = "fulgora"},
-    find_entities_filtered = function() return {fulgora_silo} end
+    find_entities_filtered = function(filter)
+      if filter.type == "rocket-silo" then provider_queries = provider_queries + 1 end
+      return {fulgora_silo}
+    end
   }
 
   local platform = {
@@ -797,6 +848,7 @@ local function test_router_rank_and_dispatch()
 
   local ok = Router.try_dispatch(request)
   assert(ok, "dispatch should succeed")
+  assert_equal(provider_queries, 1, "same-tick source ranking should reuse provider queries")
   assert_equal(request.status, "loading", "request should be loading after dispatch")
   assert_equal(request.source, "fulgora", "source should be set to fulgora")
   assert_equal(#platform.schedule.records, 4, "two temporary records should be appended")
@@ -864,4 +916,5 @@ test_construction_alert_dedup()
 test_construction_alert_item_request_proxy()
 test_platform_commandeering()
 test_router_rank_and_dispatch()
+test_fleet_preferences_eta_and_reservations()
 print("runtime_spec: OK")

@@ -2,32 +2,32 @@
 
 ## Purpose
 
-Plain Lua test suites that validate runtime and data-stage logic without a Factorio instance. Run under Lua 5.1+ with manual mocks for Factorio globals.
+Plain Lua test suites validate runtime and data-stage logic without Factorio, using manual API mocks.
 
 ## Ownership
 
-- `runtime_spec.lua` — Tests for demand scanning, construction alert normalization, chest shortage allocation, platform commandeering, transfer lifecycle
-- `data_stage_spec.lua` — Tests for `data.lua` prototype extension (chest, item, recipe, shortcut, custom-input)
+- `runtime_spec.lua` — Demand scanning, construction alert normalization, chest allocation, commandeering, ready conditions, ETA/pinning, reservations, and transfer lifecycle
+- `data_stage_spec.lua` — Data-stage prototypes for the chest, item, recipe, shortcut, custom input, and native GUI style system
+- `locale_spec.py` — Verifies every literal `il-gui.*` LocalisedString reference has an English locale definition
 
 ## Local Contracts
 
-- Each test function calls `reset_modules()` to clear `package.loaded` for `scripts.*` entries, then sets up fresh `storage`, `settings`, `defines`, `game` globals
-- Mocks are built inline per test — no shared mock framework
-- `assert_equal(actual, expected, message)` is the primary assertion helper
-- Tests run sequentially at file bottom; success prints `<spec>: OK`
+- Each test resets `package.loaded` entries for `scripts.*` and creates fresh `storage`, `settings`, `defines`, and `game` globals.
+- Mocks stay inline and cover only the API surface exercised.
+- `assert_equal(actual, expected, message)` is the primary assertion helper.
+- Tests run sequentially and print `<spec>: OK` on success.
 
 ## Work Guidance
 
-- Add a new test function for each new runtime behavior or bug fix
-- Mock only the Factorio API surface the test exercises
-- Keep tests independent — each must pass in isolation
-- Append the test call at the bottom of the file
+- Add a test for each runtime behavior or bug fix.
+- Keep tests independent and append each test call at the bottom.
 
 ## Verification
 
 ```
 lua tests/runtime_spec.lua
 lua tests/data_stage_spec.lua
+python tests/locale_spec.py
 ```
 
 ## Child DOX Index

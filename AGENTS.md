@@ -78,6 +78,11 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+- The Fleet Monitor is the first main dashboard tab.
+- Automatic and manual dashboard refreshes must not reset tab selection, scroll position, or replace the open frame.
+- Native list views use one scrollbar per axis; Delivery Fleet is separate from Other Platforms and both are sorted by ship name.
+- Native Factorio GUI work is expected to be production-ready and highly polished by default; visual hierarchy, spacing, native styles, interaction states, responsive sizing, tooltips, empty states, and in-game QA are part of completion.
+
 ## Project Overview
 
 Factorio 2.0 Space Age mod that routes requester-chest and construction-alert shortages through enrolled space platforms. Written in Lua 5.2 targeting the Factorio mod runtime.
@@ -91,11 +96,11 @@ Factorio 2.0 Space Age mod that routes requester-chest and construction-alert sh
 ## Repo-Wide Rules
 
 - Target Lua 5.2 syntax and Factorio 2.0 API
-- All runtime state persists through `storage.interplanetary_logistics` via `scripts/state.lua`
+- All runtime state, reservations, route preferences, platform options, and fleet snapshots persist through `storage.interplanetary_logistics` via `scripts/state.lua`
 - Never mutate a platform's permanent schedule records; only append/remove temporary records
 - Deterministic iteration: sort before iterating when order affects game state (desync safety)
 - Guard all `game.get_player()` calls against nil returns
-- Tests must pass under `lua tests/runtime_spec.lua` and `lua tests/data_stage_spec.lua`
+- Tests must pass under `lua tests/runtime_spec.lua`, `lua tests/data_stage_spec.lua`, and `python tests/locale_spec.py`
 
 ## Child DOX Index
 
