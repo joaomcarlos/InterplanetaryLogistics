@@ -40,6 +40,8 @@ Complete polish in the same implementation task unless the user explicitly asks 
 - Balance density with scanability; do not fill every pixel merely because the GUI permits it.
 - Use stretchable spacers intentionally so title bars and action groups remain aligned.
 - Keep widths centralized and verify their sum fits the content region at supported UI scales.
+- Treat each table as a measurable width contract. Include parent padding, inter-column gaps, action-button widths, and the scrollbar allowance; verify both the header and rows use the same contract. A table that leaves a large blank tail or pushes controls past the header is unfinished.
+- Compare the live screen at the target resolution with the reference after every substantial pass. Inspect edges and alignment before judging colors or typography.
 
 ## Visual language
 
@@ -50,6 +52,8 @@ Complete polish in the same implementation task unless the user explicitly asks 
 - Pair state color with explicit text, icon, or tooltip.
 - Use item/entity/space-location rich text or slot buttons where it improves recognition.
 - Avoid decorative noise, excessive borders, arbitrary colors, and inconsistent button sizes.
+- Check selected-state text against the selected button background, not only against the unselected state. Orange-on-orange and yellow-on-yellow are failures even when the accent color matches the design.
+- Choose native utility sprites by meaning and silhouette. Replace ambiguous bars, flags, or generic symbols when a clearer installed sprite exists; verify the name against the current Factorio utility-sprite prototype list.
 
 ## Data-dense lists
 
@@ -95,6 +99,7 @@ Complete polish in the same implementation task unless the user explicitly asks 
 - Recenter or resize on resolution and display-scale events.
 - Test long translations, large numbers, long platform names, and rich-text content.
 - Avoid clipped controls and hidden horizontal overflow.
+- Test at least one compact and one wide resolution. Recalculate or redistribute optional-column space instead of allowing headers, rows, and controls to use different effective widths.
 
 ## Localization and accessibility
 
@@ -122,5 +127,7 @@ Complete polish in the same implementation task unless the user explicitly asks 
 5. Correct alignment, clipping, inconsistent spacing, unclear labels, weak hierarchy, and noisy controls.
 6. Measure refresh and idle UPS impact with representative data.
 7. Repeat until no visible rough edges or interaction surprises remain.
+
+When data-stage definitions changed, close and relaunch Factorio before this loop. Do not diagnose an unknown style or locale key from a session that was opened before the data-stage change.
 
 If an in-game pass is unavailable, state that clearly. Static checks and mocks do not prove visual polish.

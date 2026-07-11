@@ -31,8 +31,8 @@ if gui_styles then
   gui_styles.il_nav_button = {
     type = "button_style", parent = "button", left_padding = 12, right_padding = 10,
     horizontal_align = "left", vertical_align = "center", font = "default-semibold",
-    selected_font_color = {1, 0.72, 0.20}, selected_hovered_font_color = {1, 0.82, 0.35},
-    selected_clicked_font_color = {1, 0.72, 0.20}
+    selected_font_color = {0.12, 0.10, 0.08}, selected_hovered_font_color = {0.12, 0.10, 0.08},
+    selected_clicked_font_color = {0.12, 0.10, 0.08}
   }
   gui_styles.il_status_frame = {type = "frame_style", parent = "inside_shallow_frame_with_padding", top_margin = 8, padding = 10}
   gui_styles.il_detail_frame = {type = "frame_style", parent = "inside_shallow_frame_with_padding_and_vertical_spacing", padding = 10}

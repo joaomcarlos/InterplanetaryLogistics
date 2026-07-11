@@ -1,6 +1,6 @@
 ---
 name: factorio-native-gui
-description: Build, refactor, review, and validate native Factorio mod GUIs made with LuaGuiElement, Factorio styles, LocalisedString captions, and GUI events, including persistent UI state and UPS-safe runtime support. Use for dashboards, dialogs, tables, tabs, list views, controls, live refresh behavior, state tracking, performance-sensitive scans and queues, accessibility, localization, and Factorio-native visual polish. Do not use for screenshot-replication, baked-background, sliced-sprite, or sprite-composited interfaces; those belong to a Factorio UI mockup workflow.
+description: Build, refactor, review, and validate native Factorio mod GUIs made with LuaGuiElement, Factorio styles, LocalisedString captions, and GUI events, including screenshot-led native redesigns, persistent UI state, UPS-safe refreshes, responsive layout, contrast, and in-game visual QA. Use for dashboards, dialogs, tables, tabs, list views, controls, live refresh behavior, accessibility, localization, and Factorio-native visual polish. Do not use for baked-background, sliced-sprite, or sprite-composited interfaces; those belong to a Factorio UI mockup workflow.
 ---
 
 # Factorio Native GUI
@@ -9,7 +9,7 @@ description: Build, refactor, review, and validate native Factorio mod GUIs made
 
 Use Factorio's native `LuaGuiElement` hierarchy, built-in utility sprites, prototype styles, and LocalisedStrings.
 
-Do not use this skill for sprite-based UI replicas, screenshot slicing, baked panel backgrounds, or LilEinstein-style composited interfaces. Use `factorio-ui-mockup` for those tasks.
+Use this skill for screenshot-led redesigns when the result must be built from Factorio-native elements. Do not use it for sprite-based UI replicas, screenshot slicing, baked panel backgrounds, or LilEinstein-style composited interfaces; use `factorio-ui-mockup` for those tasks.
 
 ## Default quality bar
 
@@ -48,6 +48,11 @@ Deliver a production-ready, exceptionally polished native Factorio interface by 
    - Prefer consistent columns, compact rows, native spacing, restrained color, and tooltips over decorative artwork.
    - Use built-in styles first; add prototype styles only for repeated semantics.
    - Complete the polish pass in the same task; follow [references/polish-standard.md](references/polish-standard.md).
+   - Treat every fixed-width column group as a width contract: sum column widths, padding, gaps, and scrollbar allowance, then compare the total with the actual parent width at each supported resolution and UI scale.
+   - Keep table headers and row columns driven by the same width data. Never allow a header to end early while rows continue into unused space.
+   - Use square `sprite-button` controls for square actions and rectangular buttons for labeled primary actions. Give every icon-only control a localized tooltip.
+   - Prefer utility sprites that communicate the domain clearly; inspect the installed Factorio utility-sprite list instead of guessing sprite names or accepting a visually ambiguous icon.
+   - Check selected, hovered, clicked, disabled, destructive, and attention states for contrast against their actual native backgrounds. Selected text must not use the same bright accent as an orange/yellow selected button background.
 8. Localize every player-facing string.
    - Use LocalisedString arrays for captions and tooltips.
    - Keep keys in a mod-owned section.
@@ -58,6 +63,8 @@ Deliver a production-ready, exceptionally polished native Factorio interface by 
    - Test mouse wheel, scrollbar-thumb dragging, page navigation, nested tabs, and long-list behavior independently.
    - Test with large synthetic collections and confirm work is bounded per tick.
    - Confirm queued work resumes correctly after save/load and configuration changes.
+   - After changing `data.lua`, GUI styles, utility sprites, or locale files, fully restart Factorio before judging runtime behavior. A running session can have an old data stage with new control-stage Lua and report misleading unknown-style or unknown-locale failures.
+   - Run an in-game smoke pass through every view after restart. Compare the live result with the intended reference at the same resolution, checking alignment, unused trailing space, clipping, icon meaning, status contrast, and scroll-thumb ownership.
 10. Run the mod's tests, Lua 5.2 parser, and Factorio-aware linter.
 
 ## Design standard
@@ -69,6 +76,8 @@ Read [references/ups-and-state.md](references/ups-and-state.md) before adding po
 Read [references/polish-standard.md](references/polish-standard.md) for every new screen, redesign, or substantial GUI change. This is the default expected finish, not an optional enhancement.
 
 Use Factory Planner as an architectural reference for native density, component boundaries, tag-based event routing, targeted refresh triggers, modal layering, and localization discipline. Learn patterns; do not copy its implementation wholesale.
+
+For screenshot-led redesigns, use the screenshot as a measurement reference, not as a reason to introduce baked artwork or a custom sprite system. Recreate hierarchy, spacing, colors, and density with native frames, labels, flows, tables, built-in styles, utility sprites, and rich-text prototype references. Record visible defects found during the comparison and fix them in the same pass.
 
 ## Required closeout
 

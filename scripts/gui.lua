@@ -39,6 +39,20 @@ local function layout(player)
   local compact = content_width < 1000
   local detail_width = compact and 280 or 340
   local request_list_width = content_width - detail_width - 10
+  local function expand_last(widths, available)
+    local total = 0
+    for _, width in ipairs(widths) do total = total + width end
+    widths[#widths] = widths[#widths] + math.max(0, available - total)
+    return widths
+  end
+  local fleet_widths = compact and {125, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
+  local request_widths = compact and {135, 105, 75, 0, 0, 108} or {190, 160, 90, 115, 70, 160}
+  local destination_widths = compact and {200, 280, 220} or {270, 420, 360}
+  local history_widths = compact and {180, 170, 90, 250} or {250, 250, 110, 430}
+  expand_last(fleet_widths, content_width - 16)
+  expand_last(destination_widths, content_width - 16)
+  expand_last(history_widths, content_width - 16)
+  expand_last(request_widths, request_list_width - 16)
   return {
     frame_width = frame_width,
     frame_height = frame_height,
@@ -48,10 +62,10 @@ local function layout(player)
     detail_width = detail_width,
     compact = compact,
     list_height = math.max(330, frame_height - 235),
-    fleet = compact and {125, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116},
-    requests = compact and {135, 105, 75, 0, 0, 108} or {190, 160, 90, 115, 70, 160},
-    destinations = compact and {200, 280, 220} or {270, 420, 360},
-    history = compact and {180, 170, 90, 250} or {250, 250, 110, 430}
+    fleet = fleet_widths,
+    requests = request_widths,
+    destinations = destination_widths,
+    history = history_widths
   }
 end
 
@@ -608,7 +622,7 @@ local function add_navigation(parent, player, selected)
   local nav = parent.add({type = "frame", name = "il-navigation", direction = "vertical", style = "il_navigation_frame"})
   nav.style.width = layout(player).navigation_width
   local entries = {
-    {"fleet", {"il-gui.fleet-monitor"}, "utility/starmap_platform_stopped"},
+    {"fleet", {"il-gui.fleet-monitor"}, "utility/starmap_platform_stacked"},
     {"requests", {"il-gui.requests"}, "utility/list_view"},
     {"destinations", {"il-gui.destinations"}, "utility/reference_point"},
     {"history", {"il-gui.history"}, "utility/clock"}
