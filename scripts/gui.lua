@@ -229,7 +229,8 @@ local function build_fleet(parent, player)
   })
   local tabs = parent.add({type = "tabbed-pane", name = fleet_tabs_name})
   tabs.style.horizontally_stretchable = true
-  tabs.style.vertically_stretchable = true
+  local sizes = layout(player)
+  tabs.style.height = sizes.list_height + 84
   add_tab(tabs, {"il-gui.delivery-fleet"}, "il-delivery-fleet-view", function(content, current_player)
     build_fleet_leaf(content, current_player, true)
   end, player)
@@ -309,7 +310,8 @@ local function build_requests(parent, player)
   add_metrics(parent, {{active, {"il-gui.metric-active"}}, {attention, {"il-gui.metric-attention"}}})
   local tabs = parent.add({type = "tabbed-pane", name = request_tabs_name})
   tabs.style.horizontally_stretchable = true
-  tabs.style.vertically_stretchable = true
+  local sizes = layout(player)
+  tabs.style.height = sizes.list_height + 84
   add_tab(tabs, {"il-gui.active-requests"}, "il-active-request-view", function(content, current_player)
     build_request_leaf(content, current_player, false)
   end, player)
@@ -431,7 +433,7 @@ function Gui.build(player)
 
   local tabs = frame.add({type = "tabbed-pane", name = main_tabs_name})
   tabs.style.horizontally_stretchable = true
-  tabs.style.vertically_stretchable = true
+  tabs.style.height = sizes.frame_height - 56
   add_tab(tabs, {"il-gui.fleet-monitor"}, "il-fleet-view", build_fleet, player)
   add_tab(tabs, {"il-gui.requests"}, "il-request-view", build_requests, player)
   add_tab(tabs, {"il-gui.destinations"}, "il-destination-view", build_destinations, player)

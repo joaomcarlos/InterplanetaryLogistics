@@ -64,6 +64,8 @@ Use rectangles that stop inside ornate borders. Restore static widgets such as s
 - Scroll panes add behavior and sometimes scrollbar space. If the mockup has a baked scrollbar, either clear it or disable custom baked scrollbar use and let Factorio draw the live one.
 - For live lists, name important child flows instead of relying on `children[#children]`; later decorative sprites often break index assumptions.
 - Do not assume local standalone Lua matches Factorio's Lua version. If local `luac` rejects existing Factorio-supported syntax, isolate or shim the check and explain the limitation.
+- All tabbed panes must use a fixed `height` or `maximal_height` constraint, not `vertically_stretchable = true`. `vertically_stretchable` is a valid `StretchRule` on `TabbedPaneStyleSpecification` (default `"auto"`), but setting it to `"on"` when tab content is also `vertically_stretchable` creates a circular layout dependency (tabbed-pane asks content for preferred height, content defers back) causing infinite recursion in Factorio's C++ `TabbedPane::setSize` and a stack overflow crash. The base game uses `maximal_height` on tabbed panes instead.
+- Every custom GUI style must specify a `parent` to inherit proper default sizing from Factorio's base styles. Styles without a parent can default to zero size and contribute to layout failures.
 
 ## Missing Asset Response
 

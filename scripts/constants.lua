@@ -7,8 +7,12 @@ return {
   transfer_timeout = 60 * 60 * 30,
   source_wait_timeout = 60 * 60 * 5,
   monitor_interval = 60,
+  monitor_offset = 5,
+  fleet_refresh_offset = 30,
   gui_refresh_interval = 120,
+  gui_refresh_offset = 15,
   scan_work_per_tick = 8,
+  process_work_per_tick = 4,
   stuck_timeout = 60 * 60 * 3,
   default_leg_ticks = 60 * 60 * 5,
   active_statuses = {

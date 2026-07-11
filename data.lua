@@ -4,17 +4,16 @@ local icon = "__base__/graphics/icons/requester-chest.png"
 local gui_styles = data.raw["gui-style"] and data.raw["gui-style"].default
 if gui_styles then
   gui_styles.il_dashboard_frame = {type = "frame_style", parent = "frame", padding = 8}
-  gui_styles.il_content_flow = {type = "vertical_flow_style", vertical_spacing = 6}
+  gui_styles.il_content_flow = {type = "vertical_flow_style", parent = "vertical_flow", vertical_spacing = 6}
   gui_styles.il_section_title = {type = "label_style", parent = "heading_2_label", top_margin = 2, bottom_margin = 2}
   gui_styles.il_muted_label = {type = "label_style", parent = "label", font_color = {0.62, 0.62, 0.62}}
   gui_styles.il_column_header = {type = "label_style", parent = "label", font = "default-bold", font_color = {0.86, 0.86, 0.86}}
   gui_styles.il_table_header_flow = {
-    type = "horizontal_flow_style", vertical_align = "center", left_padding = 8,
+    type = "horizontal_flow_style", parent = "horizontal_flow", vertical_align = "center", left_padding = 8,
     right_padding = 8, top_padding = 4, bottom_padding = 4
   }
   gui_styles.il_scroll_pane = {
-    type = "scroll_pane_style", parent = "scroll_pane", padding = 0,
-    vertical_scroll_bar_spacing = 6
+    type = "scroll_pane_style", parent = "scroll_pane", padding = 0
   }
   gui_styles.il_list_row = {
     type = "frame_style", parent = "inside_shallow_frame", height = 44,

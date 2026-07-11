@@ -182,14 +182,21 @@ script.on_event(defines.events.on_tick, function(event)
   if event.tick % interval == 0 then
     Demands.start_scan()
   end
-  if Demands.scan_active() and Demands.step_scan(Constants.scan_work_per_tick) then
-    Demands.process()
+  local scan_finished = false
+  if Demands.scan_active() then
+    scan_finished = Demands.step_scan(Constants.scan_work_per_tick)
+    if scan_finished then Demands.start_process() end
   end
-  if event.tick % Constants.monitor_interval == 0 then
+  if not scan_finished and Demands.process_active() then
+    Demands.step_process(Constants.process_work_per_tick)
+  end
+  if event.tick % Constants.monitor_interval == Constants.monitor_offset then
     Platforms.monitor()
+  end
+  if event.tick % Constants.monitor_interval == Constants.fleet_refresh_offset then
     Platforms.refresh_fleet()
   end
-  if event.tick % Constants.gui_refresh_interval == 0 then
+  if event.tick % Constants.gui_refresh_interval == Constants.gui_refresh_offset then
     Gui.refresh_open()
   end
 end)

@@ -278,92 +278,111 @@ local function start_alert_context(force, player)
     alerts = nil,
     alert_index = 1,
     seen = {},
-    aggregate = {}
+    aggregate = {},
+    aggregate_keys = nil,
+    aggregate_index = 1,
+    phase = "alerts"
   }
 end
 
 local function step_alert_context(context, budget, configured, needed)
   local processed = 0
   while processed < budget do
+    if context.phase == "publish" then
+      local key = context.aggregate_keys[context.aggregate_index]
+      if not key then return true, processed end
+      local entry = context.aggregate[key]
+      local surface = game.get_surface(entry.surface_index)
+      if surface then
+        local request_key = table.concat({"alert", context.force.index, entry.surface_index, entry.item, entry.quality}, "|")
+        configured[request_key] = true
+        needed[request_key] = true
+        create_request(request_key, {
+          origin = "construction-alert",
+          force_index = context.force.index,
+          destination_surface_index = surface.index,
+          destination = Util.surface_location(surface),
+          item = entry.item,
+          quality = entry.quality,
+          amount = entry.amount,
+          requested = entry.amount,
+          current = 0,
+          position = entry.position
+        })
+      end
+      context.aggregate_index = context.aggregate_index + 1
+      processed = processed + 1
+    else
     if not context.alerts then
       local surface_index = context.surface_indices[context.surface_index]
       if not surface_index then
-        for _, entry in pairs(context.aggregate) do
-          local surface = game.get_surface(entry.surface_index)
-          if surface then
-            local key = table.concat({"alert", context.force.index, entry.surface_index, entry.item, entry.quality}, "|")
-            configured[key] = true
-            needed[key] = true
-            create_request(key, {
-              origin = "construction-alert",
-              force_index = context.force.index,
-              destination_surface_index = surface.index,
-              destination = Util.surface_location(surface),
-              item = entry.item,
-              quality = entry.quality,
-              amount = entry.amount,
-              requested = entry.amount,
-              current = 0,
-              position = entry.position
-            })
-          end
-        end
-        return true, processed
+        context.aggregate_keys = {}
+        for key in pairs(context.aggregate) do context.aggregate_keys[#context.aggregate_keys + 1] = key end
+        table.sort(context.aggregate_keys)
+        context.aggregate_index = 1
+        context.phase = "publish"
+      else
+        local alerts_by_type = context.alerts_by_surface[surface_index]
+        context.alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
+        context.alert_index = 1
+        context.surface_index = context.surface_index + 1
       end
-      local alerts_by_type = context.alerts_by_surface[surface_index]
-      local source = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
-      context.alerts = {}
-      for _, alert in pairs(source) do context.alerts[#context.alerts + 1] = alert end
-      context.alert_index = 1
-      context.surface_index = context.surface_index + 1
     end
 
-    local alert = context.alerts[context.alert_index]
-    if not alert then
-      context.alerts = nil
-    else
-      local surface_index = context.surface_indices[context.surface_index - 1]
-      local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
-      if surface_idx and position and items then
-        for _, req in pairs(items) do
-          local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
-          if not context.seen[dedup_key] then
-            context.seen[dedup_key] = true
-            local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
-            local entry = context.aggregate[agg_key] or {
-              surface_index = surface_idx,
-              item = req.name,
-              quality = req.quality,
-              amount = 0,
-              position = position,
-              alert_origin = req.name
-            }
-            entry.amount = entry.amount + req.count
-            context.aggregate[agg_key] = entry
+    if context.alerts then
+      local alert = context.alerts[context.alert_index]
+      if not alert then
+        context.alerts = nil
+      else
+        local surface_index = context.surface_indices[context.surface_index - 1]
+        local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
+        if surface_idx and position and items then
+          for _, req in pairs(items) do
+            local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
+            if not context.seen[dedup_key] then
+              context.seen[dedup_key] = true
+              local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
+              local entry = context.aggregate[agg_key] or {
+                surface_index = surface_idx,
+                item = req.name,
+                quality = req.quality,
+                amount = 0,
+                position = position,
+                alert_origin = req.name
+              }
+              entry.amount = entry.amount + req.count
+              context.aggregate[agg_key] = entry
+            end
           end
         end
+        context.alert_index = context.alert_index + 1
+        processed = processed + 1
       end
-      context.alert_index = context.alert_index + 1
-      processed = processed + 1
+    end
     end
   end
   return false, processed
 end
 
+local function retire_request(state, key, configured, needed)
+  local request_id = state.request_by_key[key]
+  local request = request_id and state.requests[request_id]
+  if request then
+    if request.status == "denied" and not configured[key] then
+      state.suppressions[key] = nil
+      state.request_by_key[key] = nil
+      request.status = "cancelled"
+      request.last_reason = "Original request was removed"
+    elseif Constants.active_statuses[request.status] and not needed[key] then
+      Platforms.cancel(request, "Need was fulfilled or removed")
+    end
+  end
+end
+
 local function retire_unseen(configured, needed)
   local state = State.ensure()
-  for key, request_id in pairs(state.request_by_key) do
-    local request = state.requests[request_id]
-    if request then
-      if request.status == "denied" and not configured[key] then
-        state.suppressions[key] = nil
-        state.request_by_key[key] = nil
-        request.status = "cancelled"
-        request.last_reason = "Original request was removed"
-      elseif Constants.active_statuses[request.status] and not needed[key] then
-        Platforms.cancel(request, "Need was fulfilled or removed")
-      end
-    end
+  for key in pairs(state.request_by_key) do
+    retire_request(state, key, configured, needed)
   end
 end
 
@@ -414,7 +433,7 @@ end
 
 function Demands.start_scan()
   local state = State.ensure()
-  if state.scan_job then return false end
+  if state.scan_job or state.process_job then return false end
   state.scan_job = {
     phase = "chests",
     chest_ids = sorted_scan_chests(state.chests),
@@ -470,6 +489,10 @@ function Demands.step_scan(budget)
     elseif job.phase == "alerts" then
       local work = job.alert_players[job.alert_index]
       if not work then
+        job.retire_keys = {}
+        for key in pairs(state.request_by_key) do job.retire_keys[#job.retire_keys + 1] = key end
+        table.sort(job.retire_keys)
+        job.retire_index = 1
         job.phase = "retire"
       else
         if not job.alert_context then
@@ -491,9 +514,15 @@ function Demands.step_scan(budget)
         end
       end
     elseif job.phase == "retire" then
-      retire_unseen(job.configured, job.needed)
-      state.scan_job = nil
-      job = nil
+      local key = job.retire_keys[job.retire_index]
+      if not key then
+        state.scan_job = nil
+        job = nil
+      else
+        retire_request(state, key, job.configured, job.needed)
+        job.retire_index = job.retire_index + 1
+        processed = processed + 1
+      end
     else
       state.scan_job = nil
       job = nil
@@ -551,6 +580,55 @@ function Demands.process()
       Router.try_dispatch(request)
     end
   end
+end
+
+local process_priorities = {1, 0, -1}
+
+local function process_request(request)
+  if request.status == "queued" and game.tick >= request.auto_approve_tick then
+    Demands.approve(request.id, nil, true)
+  elseif request.status == "approved" then
+    Router.try_dispatch(request)
+  end
+end
+
+function Demands.start_process()
+  local state = State.ensure()
+  if state.scan_job or state.process_job then return false end
+  state.process_job = {
+    priority_index = 1,
+    request_id = 1,
+    max_request_id = state.next_request_id - 1
+  }
+  return true
+end
+
+function Demands.process_active()
+  return State.ensure().process_job ~= nil
+end
+
+function Demands.step_process(budget)
+  local state = State.ensure()
+  local job = state.process_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.process_work_per_tick)
+  local processed = 0
+  while processed < budget and job do
+    local priority = process_priorities[job.priority_index]
+    if not priority then
+      state.process_job = nil
+      job = nil
+    elseif job.request_id > job.max_request_id then
+      job.priority_index = job.priority_index + 1
+      job.request_id = 1
+    else
+      local request = state.requests[job.request_id]
+      if request and (request.priority or 0) == priority then process_request(request) end
+      job.request_id = job.request_id + 1
+      processed = processed + 1
+    end
+  end
+  return state.process_job == nil
 end
 
 function Demands.set_priority(request_id, priority)

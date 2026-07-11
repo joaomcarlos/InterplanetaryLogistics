@@ -137,6 +137,12 @@ local function test_scan_scheduler_is_bounded()
   assert(Demands.scan_active(), "scan should remain queued after one budget unit")
   while Demands.scan_active() do Demands.step_scan(1) end
   assert_equal(state.scan_job, nil, "completed scan should clear its job")
+  state.requests[1] = {id = 1, status = "queued", priority = 0, auto_approve_tick = 100}
+  state.next_request_id = 2
+  assert(Demands.start_process(), "scheduler should accept request processing")
+  assert_equal(Demands.step_process(1), false, "request processing should respect its budget")
+  while Demands.process_active() do Demands.step_process(1) end
+  assert_equal(state.process_job, nil, "completed request processing should clear its job")
 end
 
 local function test_construction_alert_surface_uses_target()
@@ -943,6 +949,72 @@ local function test_router_rank_and_dispatch()
   assert_equal(wrong_status, false, "try_dispatch should reject non-approved requests")
 end
 
+local function test_bounded_scan_with_alerts_transitioning_to_publish()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local prototype = {
+    valid = true,
+    name = "steel-chest",
+    items_to_place_this = {
+      {name = "steel-chest", count = 1}
+    }
+  }
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [1] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype,
+              position = {x = 12, y = 34},
+              target = {
+                valid = true,
+                name = "entity-ghost",
+                surface = nauvis,
+                position = {x = 56, y = 78},
+                ghost_prototype = prototype,
+                ghost_name = "steel-chest"
+              }
+            }
+          }
+        }
+      }
+    end
+  }
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis},
+    get_surface = function(index)
+      return ({[1] = nauvis})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end,
+    get_player = function() return player end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  assert(Demands.start_scan(), "scheduler should accept a new scan")
+  while Demands.scan_active() do Demands.step_scan(100) end
+  assert_equal(state.scan_job, nil, "completed scan should clear its job")
+  local request_id = state.request_by_key["alert|1|1|steel-chest|normal"]
+  assert(request_id, "construction alert should create a request via bounded scan")
+end
+
+test_bounded_scan_with_alerts_transitioning_to_publish()
 test_shared_network_shortages()
 test_scan_scheduler_is_bounded()
 test_construction_alert_surface_uses_target()

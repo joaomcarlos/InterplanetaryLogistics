@@ -1,0 +1,4 @@
+interface:
+  display_name: "Factorio Performance"
+  short_description: "Diagnose and prevent Factorio mod lag"
+  default_prompt: "Use $factorio-performance to profile Factorio runtime work, eliminate tick spikes, and validate efficient event-driven Lua patterns."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Factorio Native GUI"
+  short_description: "Build exceptional native Factorio interfaces"
+  default_prompt: "Use $factorio-native-gui to deliver a production-ready, exceptionally polished native Factorio interface with stable state and UPS-safe behavior."

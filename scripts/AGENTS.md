@@ -22,6 +22,8 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 
 - Fleet Monitor must remain the first main tab. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset tabs, or move scroll position.
 - Never nest vertical scroll panes. Keep summaries and column headers outside the single leaf-list scroll pane.
+- All tabbed panes must use a fixed `height` or `maximal_height` constraint, not `vertically_stretchable = true`. Setting `vertically_stretchable` to `"on"` when tab content is also stretchable creates a circular layout dependency in `TabbedPane::setSize` that crashes the game with a stack overflow.
+- Every custom GUI style must specify a `parent` to inherit proper default sizing from Factorio's base styles.
 - Treat cohesive native styles, visual hierarchy, consistent spacing, readable density, interaction states, tooltips, empty states, and responsive sizing as required implementation work, not optional follow-up polish.
 - Delivery Fleet and Other Platforms are separate views sorted by platform name. Requests are ordered by priority, workflow state, then id.
 - Request route cells show `Routing...` until `request.source` resolves; never show the demand origin as a planet.
@@ -35,6 +37,8 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Keep expensive provider/network queries cached for the current tick when multiple requests share the lookup; subtract live reservations after reading cached stock.
 - Keep normal alert scanning silent; diagnostics must not build log strings inside high-volume loops.
 - Periodic and manual scans use `Demands.start_scan()` plus bounded `Demands.step_scan()` work; do not reintroduce a full scan in `on_tick` or GUI events.
+- Scan completion must start `Demands.start_process()`; approval and dispatch work advances through `Demands.step_process()` and must not sort/dispatch the entire request table in one tick.
+- Keep monitor, fleet snapshots, and GUI refreshes on separate tick offsets so maintenance work does not stack with scan or dispatch work.
 
 ## Verification
 
