@@ -1,0 +1,4 @@
+interface:
+  display_name: "Factorio UI Mockup"
+  short_description: "Build Factorio GUIs from mockups safely"
+  default_prompt: "Use $factorio-ui-mockup to rebuild this Factorio mod GUI from its mockup and assets."

@@ -75,4 +75,16 @@ function Util.gps(entity)
   return string.format("[gps=%.1f,%.1f,%s]", entity.position.x, entity.position.y, entity.surface.name)
 end
 
+function Util.is_ghost_item_name(name)
+  return type(name) == "string"
+    and (name == "entity-ghost" or name == "tile-ghost" or string.match(name, "%-ghost$") ~= nil)
+end
+
+function Util.request_sprite(request)
+  if not request or Util.is_ghost_item_name(request.item) or not request.item then
+    return "utility/warning_white"
+  end
+  return "item/" .. request.item
+end
+
 return Util

@@ -3,9 +3,12 @@ local Constants = require("scripts.constants")
 local State = {}
 
 function State.ensure()
+  local fresh = not storage.interplanetary_logistics
   storage.interplanetary_logistics = storage.interplanetary_logistics or {}
   local state = storage.interplanetary_logistics
-  state.schema_version = Constants.schema_version
+  if fresh then
+    state.schema_version = Constants.schema_version
+  end
   state.chests = state.chests or {}
   state.requests = state.requests or {}
   state.request_by_key = state.request_by_key or {}
@@ -15,6 +18,7 @@ function State.ensure()
   state.platform_transfers = state.platform_transfers or {}
   state.history = state.history or {}
   state.source_metrics = state.source_metrics or {}
+  state.gui_tabs = state.gui_tabs or {}
   state.next_request_id = state.next_request_id or 1
   return state
 end

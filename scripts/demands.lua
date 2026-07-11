@@ -122,52 +122,151 @@ local function item_to_place(prototype)
     return nil
   end
   local items = prototype.items_to_place_this
-  local first = items and items[1]
-  if not first then
-    return nil, 0
+  if not items then
+    return nil
   end
-  return first.name, first.count or 1
+  local first = items[1] or items
+  if not first or not first.name then
+    return nil
+  end
+  return first.name, first.count or first.amount or 1
+end
+
+local function normalize_construction_alert(alert, surface_index)
+  if not alert then
+    return nil
+  end
+
+  local target = alert.target
+  local prototype = alert.prototype
+  local position = alert.position
+  local surface_idx = surface_index
+  local items = {}
+
+  if target and target.valid then
+    local target_name = target.name
+    if target.surface and target.surface.valid then
+      surface_idx = target.surface.index
+    end
+    if target.position then
+      position = target.position
+    end
+    if target_name == "entity-ghost" or target_name == "item-request-proxy" then
+      if target.item_requests then
+        for _, req in pairs(target.item_requests) do
+          if req.name and req.count and req.count > 0 then
+            items[#items + 1] = {
+              name = req.name,
+              quality = req.quality or "normal",
+              count = req.count
+            }
+          end
+        end
+      end
+    end
+    if target_name == "entity-ghost" then
+      if target.ghost_prototype and target.ghost_prototype.valid then
+        prototype = target.ghost_prototype
+      end
+    elseif target_name == "item-request-proxy" then
+      local proxy_target = target.proxy_target
+      if proxy_target and proxy_target.valid and proxy_target.name == "entity-ghost" then
+        if proxy_target.ghost_prototype and proxy_target.ghost_prototype.valid then
+          prototype = proxy_target.ghost_prototype
+        end
+      end
+    elseif target.prototype and target.prototype.valid then
+      prototype = target.prototype
+    end
+  end
+
+  if not position then
+    return nil
+  end
+
+  local place_item, place_count = item_to_place(prototype)
+  if place_item then
+    items[#items + 1] = {name = place_item, quality = "normal", count = place_count}
+  end
+
+  if #items == 0 then
+    return nil
+  end
+
+  return surface_idx, position, items
 end
 
 local function scan_alerts(configured, needed)
   for _, force in pairs(game.forces) do
-    local player
+    local players = {}
     for _, candidate in pairs(force.players) do
-      player = candidate
-      break
+      if candidate.valid then
+        players[#players + 1] = candidate
+      end
     end
-    if player and player.valid then
+    table.sort(players, function(a, b) return a.index < b.index end)
+    for _, player in ipairs(players) do
       local alerts_by_surface = player.get_alerts({type = defines.alert_type.no_material_for_construction})
+      local surface_count = 0
+      for _ in pairs(alerts_by_surface) do surface_count = surface_count + 1 end
+      log("[IL] scan_alerts: force=" .. force.index .. " player=" .. player.index .. " surfaces_with_alerts=" .. surface_count)
+      local seen = {}
       local aggregate = {}
       for surface_index, alerts_by_type in pairs(alerts_by_surface) do
         local alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
+        local alert_count = 0
+        local accepted_count = 0
+        for _ in pairs(alerts) do alert_count = alert_count + 1 end
         for _, alert in pairs(alerts) do
-          local prototype = alert.prototype
-          if (not prototype or not prototype.valid) and alert.target and alert.target.valid then
-            prototype = alert.target.ghost_prototype
-          end
-          local item, count = item_to_place(prototype)
-          if item then
-            local key = table.concat({surface_index, item, "normal"}, "|")
-            local entry = aggregate[key] or {
-              surface_index = surface_index,
-              item = item,
-              quality = "normal",
-              amount = 0,
-              position = alert.position
-            }
-            entry.amount = entry.amount + count
-            aggregate[key] = entry
+          local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
+          if surface_idx and position and items then
+            accepted_count = accepted_count + 1
+            for _, req in pairs(items) do
+              local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
+              if not seen[dedup_key] then
+                seen[dedup_key] = true
+                local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
+                local entry = aggregate[agg_key] or {
+                  surface_index = surface_idx,
+                  item = req.name,
+                  quality = req.quality,
+                  amount = 0,
+                  position = position,
+                  alert_origin = req.name
+                }
+                entry.amount = entry.amount + req.count
+                aggregate[agg_key] = entry
+              end
+            end
+          else
+            local tgt = alert.target
+            local tgt_name = tgt and tgt.valid and tgt.name or "nil"
+            local tgt_has_surface = tgt and tgt.valid and tgt.surface and "yes" or "no"
+            local tgt_has_item_req = 0
+            if tgt and tgt.valid and (tgt_name == "entity-ghost" or tgt_name == "item-request-proxy") and tgt.item_requests then
+              tgt_has_item_req = #tgt.item_requests
+            end
+            local proto_name = alert.prototype and alert.prototype.valid and alert.prototype.name or "nil"
+            local has_pos = alert.position and "yes" or "no"
+            log("[IL] alert rejected: surface=" .. surface_index ..
+                " target=" .. tgt_name ..
+                " target_surface=" .. tgt_has_surface ..
+                " target_item_req_count=" .. tostring(tgt_has_item_req) ..
+                " prototype=" .. proto_name ..
+                " has_position=" .. has_pos)
           end
         end
+        log("[IL] surface=" .. surface_index .. " total_alerts=" .. alert_count .. " accepted=" .. accepted_count)
       end
+      local agg_count = 0
       for _, entry in pairs(aggregate) do
+        agg_count = agg_count + 1
         local surface = game.get_surface(entry.surface_index)
         if surface then
           local key = table.concat({"alert", force.index, entry.surface_index, entry.item, entry.quality}, "|")
           configured[key] = true
           needed[key] = true
-          create_request(key, {
+          local req = create_request(key, {
             origin = "construction-alert",
             force_index = force.index,
             destination_surface_index = surface.index,
@@ -179,8 +278,12 @@ local function scan_alerts(configured, needed)
             current = 0,
             position = entry.position
           })
+          log("[IL] request created: key=" .. key .. " item=" .. entry.item .. " amount=" .. entry.amount .. " status=" .. (req and req.status or "nil"))
+        else
+          log("[IL] aggregate entry skipped (no surface): surface_index=" .. entry.surface_index .. " item=" .. entry.item)
         end
       end
+      log("[IL] scan_alerts done: force=" .. force.index .. " aggregate_entries=" .. agg_count)
     end
   end
 end
@@ -227,7 +330,8 @@ function Demands.approve(request_id, player_index, automatic)
   end
   request.status = "approved"
   request.approved_tick = game.tick
-  request.approved_by = automatic and "automatic" or (player_index and game.get_player(player_index).name or "script")
+  local approving_player = player_index and game.get_player(player_index)
+  request.approved_by = automatic and "automatic" or (approving_player and approving_player.name or "script")
   request.last_reason = nil
   State.ensure().suppressions[request.key] = nil
   State.add_history(request, "approved", automatic and "Auto-approved" or "Manually approved")
@@ -243,7 +347,8 @@ function Demands.deny(request_id, player_index)
   end
   request.status = "denied"
   request.denied_tick = game.tick
-  request.denied_by = player_index and game.get_player(player_index).name or "script"
+  local denying_player = player_index and game.get_player(player_index)
+  request.denied_by = denying_player and denying_player.name or "script"
   request.last_reason = "Denied; retained for manual review"
   state.suppressions[request.key] = true
   State.add_history(request, "denied", request.last_reason)

@@ -24,6 +24,21 @@ local function on_removed(event)
   unregister_chest(event.entity)
 end
 
+local function remember_tab_selection(event)
+  local element = event.element
+  if not element or not element.valid or element.type ~= "tabbed-pane" then
+    return
+  end
+  local state = State.ensure()
+  local gui_tabs = state.gui_tabs[event.player_index] or {}
+  state.gui_tabs[event.player_index] = gui_tabs
+  if element.name == "il-tabs" then
+    gui_tabs.main_tab_index = element.selected_tab_index or 1
+  elseif element.name == "il-platform-tabs" then
+    gui_tabs.platform_tab_index = element.selected_tab_index or 1
+  end
+end
+
 local function parse_id(name, prefix)
   local value = string.match(name, "^" .. prefix .. "(%d+)$")
   return value and tonumber(value) or nil
@@ -66,16 +81,15 @@ local function on_gui_click(event)
     Gui.build(player)
     return
   end
-  id = parse_id(element.name, "il%-enroll%-")
+  id = parse_id(element.name, "il%-platform%-enrollment%-")
   if id then
-    Platforms.set_enrolled(player.force.index, id, true)
-    Gui.build(player)
-    return
-  end
-  id = parse_id(element.name, "il%-unenroll%-")
-  if id and not State.ensure().platform_transfers[id] then
-    Platforms.set_enrolled(player.force.index, id, false)
-    Gui.build(player)
+    local enrolled = Platforms.is_enrolled(player.force.index, id)
+    if enrolled and State.ensure().platform_transfers[id] then
+      return
+    end
+    enrolled = not enrolled
+    Platforms.set_enrolled(player.force.index, id, enrolled)
+    Gui.update_platform_enrollment(player, element, enrolled)
   end
 end
 
@@ -115,9 +129,13 @@ script.on_event("il-toggle-dashboard-input", function(event)
 end)
 
 script.on_event(defines.events.on_gui_click, on_gui_click)
+script.on_event(defines.events.on_gui_selected_tab_changed, remember_tab_selection)
 script.on_event(defines.events.on_gui_closed, function(event)
   if event.element and event.element.valid and event.element.name == Constants.dashboard_name then
-    Gui.close(game.get_player(event.player_index))
+    local player = game.get_player(event.player_index)
+    if player then
+      Gui.close(player)
+    end
   end
 end)
 
@@ -126,7 +144,6 @@ script.on_event(defines.events.on_tick, function(event)
   if event.tick % interval == 0 then
     Demands.scan()
     Demands.process()
-    Gui.refresh_open()
   end
 end)
 

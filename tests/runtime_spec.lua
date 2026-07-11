@@ -1,5 +1,7 @@
 package.path = ".\\?.lua;.\\?\\init.lua;" .. package.path
 
+log = function() end
+
 local function reset_modules()
   for name in pairs(package.loaded) do
     if string.match(name, "^scripts%.") then
@@ -99,6 +101,422 @@ local function test_shared_network_shortages()
   assert_equal(state.suppressions[first_request.key], nil, "suppression should clear after request filter removal")
   assert_equal(first_request.status, "cancelled", "removed denied request should leave manual review")
   assert(chest_one.valid)
+end
+
+local function test_construction_alert_surface_uses_target()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local prototype = {
+    valid = true,
+    name = "steel-chest",
+    items_to_place_this = {
+      {name = "steel-chest", count = 1}
+    }
+  }
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local vulcanus = {valid = true, index = 2, name = "vulcanus", planet = {name = "vulcanus"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [2] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype,
+              position = {x = 12, y = 34},
+              target = {
+                valid = true,
+                name = "entity-ghost",
+                surface = vulcanus,
+                position = {x = 56, y = 78},
+                ghost_prototype = prototype,
+                ghost_name = "steel-chest"
+              }
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis, [2] = vulcanus},
+    get_surface = function(index)
+      return ({[1] = nauvis, [2] = vulcanus})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  local request_id = state.request_by_key["alert|1|2|steel-chest|normal"]
+  assert(request_id, "construction alert should use the target surface")
+  local request = state.requests[request_id]
+  assert_equal(request.destination_surface_index, 2, "destination surface should come from the alert target")
+  assert_equal(request.destination, "vulcanus", "destination name should use the alert target surface")
+  assert_equal(request.position.x, 56, "alert target position should be preferred")
+  assert_equal(request.origin, "construction-alert", "construction alert should be marked as such")
+end
+
+local function test_construction_alert_summary_is_ignored()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+  log = function() end
+
+  local prototype = {
+    valid = true,
+    items_to_place_this = {
+      {name = "steel-chest", count = 1}
+    }
+  }
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [1] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis},
+    get_surface = function(index)
+      return ({[1] = nauvis})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  assert_equal(next(state.requests), nil, "summary construction alerts should not create interplanetary requests")
+  assert_equal(state.request_by_key["alert|1|1|steel-chest|normal"], nil, "summary alerts should stay ignored")
+end
+
+local function test_construction_alert_non_ghost_entity_target()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local prototype = {
+    valid = true,
+    name = "fast-inserter",
+    items_to_place_this = {
+      {name = "fast-inserter", count = 1}
+    }
+  }
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [1] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype,
+              position = {x = 10, y = 20},
+              target = setmetatable({
+                valid = true,
+                name = "fast-inserter",
+                surface = nauvis,
+                position = {x = 10, y = 20},
+                prototype = prototype
+              }, {
+                __index = function(_, key)
+                  assert_equal(key, "item_requests", "ordinary entities must not read item_requests")
+                  error("unexpected property access: " .. key)
+                end
+              })
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis},
+    get_surface = function(index)
+      return ({[1] = nauvis})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  local request_id = state.request_by_key["alert|1|1|fast-inserter|normal"]
+  assert(request_id, "non-ghost entity target alert should create a request")
+  local request = state.requests[request_id]
+  assert_equal(request.destination_surface_index, 1, "destination surface should come from the alert target")
+  assert_equal(request.destination, "nauvis", "destination name should use the alert target surface")
+  assert_equal(request.position.x, 10, "alert target position should be used")
+  assert_equal(request.origin, "construction-alert", "non-ghost alert should be marked as construction-alert")
+end
+
+local function test_construction_alert_prototype_position_only()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local prototype = {
+    valid = true,
+    name = "assembling-machine-1",
+    items_to_place_this = {
+      {name = "assembling-machine-1", count = 1}
+    }
+  }
+  local vulcanus = {valid = true, index = 2, name = "vulcanus", planet = {name = "vulcanus"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [2] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype,
+              position = {x = 30, y = 40}
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[2] = vulcanus},
+    get_surface = function(index)
+      return ({[2] = vulcanus})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  local request_id = state.request_by_key["alert|1|2|assembling-machine-1|normal"]
+  assert(request_id, "prototype+position alert without target should create a request")
+  local request = state.requests[request_id]
+  assert_equal(request.destination_surface_index, 2, "surface should come from the get_alerts surface key")
+  assert_equal(request.destination, "vulcanus", "destination should use the surface from the alert key")
+  assert_equal(request.position.x, 30, "alert position should be used when no target is present")
+end
+
+local function test_construction_alert_dedup()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local prototype = {
+    valid = true,
+    name = "solar-panel",
+    items_to_place_this = {
+      {name = "solar-panel", count = 1}
+    }
+  }
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [1] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = prototype,
+              position = {x = 5, y = 5},
+              target = {
+                valid = true,
+                name = "entity-ghost",
+                surface = nauvis,
+                position = {x = 5, y = 5},
+                ghost_prototype = prototype,
+                ghost_name = "solar-panel"
+              }
+            },
+            {
+              prototype = prototype,
+              position = {x = 5, y = 5},
+              target = {
+                valid = true,
+                name = "entity-ghost",
+                surface = nauvis,
+                position = {x = 5, y = 5},
+                ghost_prototype = prototype,
+                ghost_name = "solar-panel"
+              }
+            },
+            {
+              prototype = prototype,
+              position = {x = 6, y = 6},
+              target = {
+                valid = true,
+                name = "entity-ghost",
+                surface = nauvis,
+                position = {x = 6, y = 6},
+                ghost_prototype = prototype,
+                ghost_name = "solar-panel"
+              }
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis},
+    get_surface = function(index)
+      return ({[1] = nauvis})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  local request_id = state.request_by_key["alert|1|1|solar-panel|normal"]
+  assert(request_id, "deduped construction alerts should create a request")
+  local request = state.requests[request_id]
+  assert_equal(request.amount, 2, "two unique positions should aggregate to count 2, not 3")
+end
+
+local function test_construction_alert_item_request_proxy()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {
+        [1] = {
+          [defines.alert_type.no_material_for_construction] = {
+            {
+              prototype = {valid = true, name = "item-request-proxy"},
+              position = {x = 15, y = 25},
+              target = {
+                valid = true,
+                name = "item-request-proxy",
+                surface = nauvis,
+                position = {x = 15, y = 25},
+                item_requests = {
+                  {name = "speed-module", count = 2, quality = "normal"},
+                  {name = "efficiency-module", count = 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    end
+  }
+
+  force.players = {player}
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = nauvis},
+    get_surface = function(index)
+      return ({[1] = nauvis})[index]
+    end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  Demands.scan()
+
+  local speed_id = state.request_by_key["alert|1|1|speed-module|normal"]
+  assert(speed_id, "item-request-proxy alert should create a request for speed-module")
+  local speed_req = state.requests[speed_id]
+  assert_equal(speed_req.amount, 2, "speed-module amount should come from item_requests")
+  assert_equal(speed_req.destination_surface_index, 1, "surface should come from the proxy target")
+  assert_equal(speed_req.position.x, 15, "position should come from the proxy target")
+
+  local eff_id = state.request_by_key["alert|1|1|efficiency-module|normal"]
+  assert(eff_id, "item-request-proxy alert should create a request for efficiency-module")
+  local eff_req = state.requests[eff_id]
+  assert_equal(eff_req.amount, 1, "efficiency-module amount should come from item_requests")
 end
 
 local function make_sections()
@@ -259,6 +677,191 @@ local function test_platform_commandeering()
   assert_equal(#pad_sections.sections, 0, "failed transfer should remove landing-pad request section")
 end
 
+local function test_router_rank_and_dispatch()
+  reset_modules()
+  storage = {}
+  defines = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local fulgora = {valid = true, index = 2, name = "fulgora", planet = {name = "fulgora"}}
+
+  local nauvis_network = {
+    valid = true,
+    network_id = 1,
+    get_item_count = function() return 100 end
+  }
+  local fulgora_network = {
+    valid = true,
+    network_id = 2,
+    get_item_count = function() return 200 end
+  }
+
+  local nauvis_silo = {valid = true, position = {x = 0, y = 0}}
+  local fulgora_silo = {valid = true, position = {x = 0, y = 0}}
+
+  local cargo_count = 0
+  local inventory = {
+    get_item_count = function() return cargo_count end,
+    get_insertable_count = function() return 1000 end
+  }
+  local hub_sections = make_sections()
+  local pad_sections = make_sections()
+  local hub = {
+    valid = true,
+    get_main_inventory = function() return inventory end,
+    get_logistic_sections = function() return hub_sections end
+  }
+  local pad = {
+    valid = true,
+    unit_number = 50,
+    logistic_network = {valid = true, network_id = 7},
+    get_item_count = function() return 0 end,
+    get_logistic_sections = function() return pad_sections end
+  }
+
+  local nauvis_surface = {
+    valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"},
+    find_entities_filtered = function(filter)
+      if filter.type == "cargo-landing-pad" then return {pad} end
+      return {nauvis_silo}
+    end
+  }
+  local fulgora_surface = {
+    valid = true, index = 2, name = "fulgora", planet = {name = "fulgora"},
+    find_entities_filtered = function() return {fulgora_silo} end
+  }
+
+  local platform = {
+    valid = true,
+    index = 4,
+    name = "Courier",
+    hub = hub,
+    space_location = {name = "fulgora"},
+    schedule = {
+      current = 1,
+      records = {
+        {station = "nauvis", wait_conditions = {{type = "time", ticks = 60}}},
+        {station = "fulgora", wait_conditions = {{type = "time", ticks = 60}}}
+      }
+    }
+  }
+  local force = {
+    valid = true,
+    index = 1,
+    platforms = {platform},
+    find_logistic_network_by_position = function(_, surface)
+      if surface.index == 1 then return nauvis_network end
+      return fulgora_network
+    end
+  }
+  game = {
+    tick = 100,
+    forces = {[1] = force},
+    surfaces = {[1] = nauvis_surface, [2] = fulgora_surface},
+    get_surface = function(index)
+      return ({[1] = nauvis_surface, [2] = fulgora_surface})[index]
+    end,
+    get_entity_by_unit_number = function(unit_number) return unit_number == 50 and pad or nil end
+  }
+
+  local State = require("scripts.state")
+  local Router = require("scripts.router")
+  local Platforms = require("scripts.platforms")
+  local state = State.ensure()
+  state.enrolled[1] = {[4] = true}
+
+  local request = {
+    id = 1,
+    key = "test",
+    status = "approved",
+    force_index = 1,
+    destination_surface_index = 1,
+    logistic_network_id = 7,
+    destination = "nauvis",
+    item = "holmium-plate",
+    quality = "normal",
+    amount = 50,
+    origin = "chest"
+  }
+  state.requests[1] = request
+  state.request_by_key.test = 1
+
+  local sources = Router.rank_sources(request, force)
+  assert_equal(#sources, 1, "only fulgora should qualify (nauvis is destination)")
+  assert_equal(sources[1].location, "fulgora", "fulgora should be the ranked source")
+  assert_equal(sources[1].available, 200, "fulgora available should be 200")
+
+  local ok = Router.try_dispatch(request)
+  assert(ok, "dispatch should succeed")
+  assert_equal(request.status, "loading", "request should be loading after dispatch")
+  assert_equal(request.source, "fulgora", "source should be set to fulgora")
+  assert_equal(#platform.schedule.records, 4, "two temporary records should be appended")
+
+  cargo_count = 50
+  Platforms.monitor()
+  assert_equal(request.status, "delivering", "loaded cargo should transition to delivering")
+
+  cargo_count = 0
+  platform.space_location = {name = "nauvis"}
+  game.tick = 200
+  Platforms.monitor()
+  assert_equal(request.status, "completed", "unloaded cargo should complete transfer")
+
+  local metrics = state.source_metrics["fulgora"]
+  assert(metrics, "source metrics should be recorded for fulgora")
+  assert_equal(metrics.successes, 1, "successful transfer should increment successes")
+  assert_equal(metrics.failures, 0, "no failures should be recorded")
+
+  local second = {
+    id = 2,
+    key = "test-two",
+    status = "approved",
+    force_index = 1,
+    destination_surface_index = 1,
+    logistic_network_id = 7,
+    destination = "nauvis",
+    item = "holmium-plate",
+    quality = "normal",
+    amount = 999,
+    origin = "chest"
+  }
+  state.requests[2] = second
+  state.request_by_key["test-two"] = 2
+  local no_match = Router.try_dispatch(second)
+  assert_equal(no_match, false, "dispatch should fail when no source has enough stock")
+  assert_equal(second.status, "approved", "failed dispatch should leave request approved")
+  assert(second.last_reason, "failed dispatch should set a reason")
+
+  local third = {
+    id = 3,
+    key = "test-three",
+    status = "queued",
+    force_index = 1,
+    destination_surface_index = 1,
+    logistic_network_id = 7,
+    destination = "nauvis",
+    item = "holmium-plate",
+    quality = "normal",
+    amount = 50,
+    origin = "chest"
+  }
+  state.requests[3] = third
+  state.request_by_key["test-three"] = 3
+  local wrong_status = Router.try_dispatch(third)
+  assert_equal(wrong_status, false, "try_dispatch should reject non-approved requests")
+end
+
 test_shared_network_shortages()
+test_construction_alert_surface_uses_target()
+test_construction_alert_summary_is_ignored()
+test_construction_alert_non_ghost_entity_target()
+test_construction_alert_prototype_position_only()
+test_construction_alert_dedup()
+test_construction_alert_item_request_proxy()
 test_platform_commandeering()
+test_router_rank_and_dispatch()
 print("runtime_spec: OK")

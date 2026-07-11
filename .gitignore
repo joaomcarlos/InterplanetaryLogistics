@@ -16,3 +16,6 @@ build/
 out/
 target/
 node_modules/
+
+#.agents
+#AGENTS.md

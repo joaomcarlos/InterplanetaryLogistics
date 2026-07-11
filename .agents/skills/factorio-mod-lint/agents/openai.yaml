@@ -1,0 +1,4 @@
+interface:
+  display_name: "Factorio Mod Lint"
+  short_description: "Lint Factorio mods for Lua and lifecycle issues"
+  default_prompt: "Use $factorio-mod-lint to lint this Factorio mod and explain the highest-risk findings."
