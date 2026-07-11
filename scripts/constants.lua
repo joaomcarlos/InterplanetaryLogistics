@@ -8,6 +8,7 @@ return {
   source_wait_timeout = 60 * 60 * 5,
   monitor_interval = 60,
   gui_refresh_interval = 120,
+  scan_work_per_tick = 8,
   stuck_timeout = 60 * 60 * 3,
   default_leg_ticks = 60 * 60 * 5,
   active_statuses = {

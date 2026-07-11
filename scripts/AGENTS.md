@@ -34,6 +34,7 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Keep periodic monitoring single-owned: `Platforms.monitor()` runs from the control scheduler, not from both scan processing and the monitor interval.
 - Keep expensive provider/network queries cached for the current tick when multiple requests share the lookup; subtract live reservations after reading cached stock.
 - Keep normal alert scanning silent; diagnostics must not build log strings inside high-volume loops.
+- Periodic and manual scans use `Demands.start_scan()` plus bounded `Demands.step_scan()` work; do not reintroduce a full scan in `on_tick` or GUI events.
 
 ## Verification
 

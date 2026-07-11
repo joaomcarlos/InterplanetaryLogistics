@@ -61,8 +61,7 @@ local function on_gui_click(event)
     Gui.close(player)
     return
   elseif element.name == "il-refresh" then
-    Demands.scan()
-    Demands.process()
+    Demands.start_scan()
     Platforms.refresh_fleet()
     Gui.refresh_structure(player)
     return
@@ -181,7 +180,9 @@ end)
 script.on_event(defines.events.on_tick, function(event)
   local interval = settings.global["il-scan-interval"].value
   if event.tick % interval == 0 then
-    Demands.scan()
+    Demands.start_scan()
+  end
+  if Demands.scan_active() and Demands.step_scan(Constants.scan_work_per_tick) then
     Demands.process()
   end
   if event.tick % Constants.monitor_interval == 0 then
@@ -203,7 +204,6 @@ remote.add_interface("interplanetary_logistics", {
     end
   end,
   rescan = function()
-    Demands.scan()
-    Demands.process()
+    Demands.start_scan()
   end
 })

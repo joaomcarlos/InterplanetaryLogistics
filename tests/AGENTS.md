@@ -21,6 +21,7 @@ Plain Lua test suites validate runtime and data-stage logic without Factorio, us
 
 - Add a test for each runtime behavior or bug fix.
 - Keep tests independent and append each test call at the bottom.
+- Cover scan scheduler completion and bounded progress when changing demand scanning.
 
 ## Verification
 

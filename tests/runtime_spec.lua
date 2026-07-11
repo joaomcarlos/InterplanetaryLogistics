@@ -34,7 +34,8 @@ local function test_shared_network_shortages()
     end
   }
   local surface = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
-  local force = {valid = true, index = 1, players = {}}
+  local player = {valid = true, index = 1, get_alerts = function() return {} end}
+  local force = {valid = true, index = 1, players = {player}}
   local entities = {}
   local function chest(unit_number)
     local point = {
@@ -101,6 +102,41 @@ local function test_shared_network_shortages()
   assert_equal(state.suppressions[first_request.key], nil, "suppression should clear after request filter removal")
   assert_equal(first_request.status, "cancelled", "removed denied request should leave manual review")
   assert(chest_one.valid)
+end
+
+local function test_scan_scheduler_is_bounded()
+  reset_modules()
+  storage = {}
+  settings = {global = { ["il-auto-approve-seconds"] = {value = 30}, ["il-source-reserve"] = {value = 0} }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+  local surface = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local force = {valid = true, index = 1, players = {}}
+  local chest = {
+    valid = true,
+    name = "interplanetary-requester-chest",
+    unit_number = 1,
+    force = force,
+    surface = surface,
+    position = {x = 0, y = 0},
+    get_requester_point = function() return {filters = {}, targeted_items_deliver = {}} end
+  }
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {surface},
+    get_entity_by_unit_number = function() return chest end,
+    get_surface = function() return surface end,
+    get_player = function() return player end
+  }
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  state.chests[1] = true
+  assert(Demands.start_scan(), "scheduler should accept a new scan")
+  assert_equal(Demands.step_scan(1), false, "one budget unit should not complete all scan phases")
+  assert(Demands.scan_active(), "scan should remain queued after one budget unit")
+  while Demands.scan_active() do Demands.step_scan(1) end
+  assert_equal(state.scan_job, nil, "completed scan should clear its job")
 end
 
 local function test_construction_alert_surface_uses_target()
@@ -908,6 +944,7 @@ local function test_router_rank_and_dispatch()
 end
 
 test_shared_network_shortages()
+test_scan_scheduler_is_bounded()
 test_construction_alert_surface_uses_target()
 test_construction_alert_summary_is_ignored()
 test_construction_alert_non_ghost_entity_target()

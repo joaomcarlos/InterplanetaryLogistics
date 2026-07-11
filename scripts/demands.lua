@@ -99,22 +99,26 @@ local function collect_chest(chest, configured, groups)
   end
 end
 
+local function publish_chest_group(group, needed)
+  table.sort(group.entries, function(a, b)
+    return a.data.chest_unit_number < b.data.chest_unit_number
+  end)
+  local available = group.supply
+  for _, entry in ipairs(group.entries) do
+    local covered = math.min(available, entry.local_need)
+    available = available - covered
+    local missing = entry.local_need - covered
+    if missing > 0 then
+      needed[entry.key] = true
+      entry.data.amount = missing
+      create_request(entry.key, entry.data)
+    end
+  end
+end
+
 local function publish_chest_groups(groups, needed)
   for _, group in pairs(groups) do
-    table.sort(group.entries, function(a, b)
-      return a.data.chest_unit_number < b.data.chest_unit_number
-    end)
-    local available = group.supply
-    for _, entry in pairs(group.entries) do
-      local covered = math.min(available, entry.local_need)
-      available = available - covered
-      local missing = entry.local_need - covered
-      if missing > 0 then
-        needed[entry.key] = true
-        entry.data.amount = missing
-        create_request(entry.key, entry.data)
-      end
-    end
+    publish_chest_group(group, needed)
   end
 end
 
@@ -197,66 +201,153 @@ local function normalize_construction_alert(alert, surface_index)
   return surface_idx, position, items
 end
 
-local function scan_alerts(configured, needed)
-  for _, force in pairs(game.forces) do
-    local players = {}
-    for _, candidate in pairs(force.players) do
-      if candidate.valid then
-        players[#players + 1] = candidate
-      end
-    end
-    table.sort(players, function(a, b) return a.index < b.index end)
-    for _, player in ipairs(players) do
-      local alerts_by_surface = player.get_alerts({type = defines.alert_type.no_material_for_construction})
-      local seen = {}
-      local aggregate = {}
-      for surface_index, alerts_by_type in pairs(alerts_by_surface) do
-        local alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
-        for _, alert in pairs(alerts) do
-          local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
-          if surface_idx and position and items then
-            for _, req in pairs(items) do
-              local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
-              if not seen[dedup_key] then
-                seen[dedup_key] = true
-                local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
-                local entry = aggregate[agg_key] or {
-                  surface_index = surface_idx,
-                  item = req.name,
-                  quality = req.quality,
-                  amount = 0,
-                  position = position,
-                  alert_origin = req.name
-                }
-                entry.amount = entry.amount + req.count
-                aggregate[agg_key] = entry
-              end
-            end
+local function scan_alert_player(force, player, configured, needed)
+  local alerts_by_surface = player.get_alerts({type = defines.alert_type.no_material_for_construction})
+  local seen = {}
+  local aggregate = {}
+  for surface_index, alerts_by_type in pairs(alerts_by_surface) do
+    local alerts = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
+    for _, alert in pairs(alerts) do
+      local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
+      if surface_idx and position and items then
+        for _, req in pairs(items) do
+          local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
+          if not seen[dedup_key] then
+            seen[dedup_key] = true
+            local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
+            local entry = aggregate[agg_key] or {
+              surface_index = surface_idx,
+              item = req.name,
+              quality = req.quality,
+              amount = 0,
+              position = position,
+              alert_origin = req.name
+            }
+            entry.amount = entry.amount + req.count
+            aggregate[agg_key] = entry
           end
-        end
-      end
-      for _, entry in pairs(aggregate) do
-        local surface = game.get_surface(entry.surface_index)
-        if surface then
-          local key = table.concat({"alert", force.index, entry.surface_index, entry.item, entry.quality}, "|")
-          configured[key] = true
-          needed[key] = true
-          local req = create_request(key, {
-            origin = "construction-alert",
-            force_index = force.index,
-            destination_surface_index = surface.index,
-            destination = Util.surface_location(surface),
-            item = entry.item,
-            quality = entry.quality,
-            amount = entry.amount,
-            requested = entry.amount,
-            current = 0,
-            position = entry.position
-          })
         end
       end
     end
   end
+  for _, entry in pairs(aggregate) do
+    local surface = game.get_surface(entry.surface_index)
+    if surface then
+      local key = table.concat({"alert", force.index, entry.surface_index, entry.item, entry.quality}, "|")
+      configured[key] = true
+      needed[key] = true
+      create_request(key, {
+        origin = "construction-alert",
+        force_index = force.index,
+        destination_surface_index = surface.index,
+        destination = Util.surface_location(surface),
+        item = entry.item,
+        quality = entry.quality,
+        amount = entry.amount,
+        requested = entry.amount,
+        current = 0,
+        position = entry.position
+      })
+    end
+  end
+end
+
+local function scan_alerts(configured, needed)
+  for _, force in pairs(game.forces) do
+    local players = {}
+    for _, candidate in pairs(force.players) do
+      if candidate.valid then players[#players + 1] = candidate end
+    end
+    table.sort(players, function(a, b) return a.index < b.index end)
+    for _, player in ipairs(players) do
+      scan_alert_player(force, player, configured, needed)
+    end
+  end
+end
+
+local function start_alert_context(force, player)
+  local alerts_by_surface = player.get_alerts({type = defines.alert_type.no_material_for_construction})
+  local surface_indices = {}
+  for surface_index in pairs(alerts_by_surface) do surface_indices[#surface_indices + 1] = surface_index end
+  table.sort(surface_indices)
+  return {
+    force = force,
+    alerts_by_surface = alerts_by_surface,
+    surface_indices = surface_indices,
+    surface_index = 1,
+    alerts = nil,
+    alert_index = 1,
+    seen = {},
+    aggregate = {}
+  }
+end
+
+local function step_alert_context(context, budget, configured, needed)
+  local processed = 0
+  while processed < budget do
+    if not context.alerts then
+      local surface_index = context.surface_indices[context.surface_index]
+      if not surface_index then
+        for _, entry in pairs(context.aggregate) do
+          local surface = game.get_surface(entry.surface_index)
+          if surface then
+            local key = table.concat({"alert", context.force.index, entry.surface_index, entry.item, entry.quality}, "|")
+            configured[key] = true
+            needed[key] = true
+            create_request(key, {
+              origin = "construction-alert",
+              force_index = context.force.index,
+              destination_surface_index = surface.index,
+              destination = Util.surface_location(surface),
+              item = entry.item,
+              quality = entry.quality,
+              amount = entry.amount,
+              requested = entry.amount,
+              current = 0,
+              position = entry.position
+            })
+          end
+        end
+        return true, processed
+      end
+      local alerts_by_type = context.alerts_by_surface[surface_index]
+      local source = alerts_by_type[defines.alert_type.no_material_for_construction] or {}
+      context.alerts = {}
+      for _, alert in pairs(source) do context.alerts[#context.alerts + 1] = alert end
+      context.alert_index = 1
+      context.surface_index = context.surface_index + 1
+    end
+
+    local alert = context.alerts[context.alert_index]
+    if not alert then
+      context.alerts = nil
+    else
+      local surface_index = context.surface_indices[context.surface_index - 1]
+      local surface_idx, position, items = normalize_construction_alert(alert, surface_index)
+      if surface_idx and position and items then
+        for _, req in pairs(items) do
+          local dedup_key = table.concat({surface_idx, req.name, req.quality, position.x, position.y}, "|")
+          if not context.seen[dedup_key] then
+            context.seen[dedup_key] = true
+            local agg_key = table.concat({surface_idx, req.name, req.quality}, "|")
+            local entry = context.aggregate[agg_key] or {
+              surface_index = surface_idx,
+              item = req.name,
+              quality = req.quality,
+              amount = 0,
+              position = position,
+              alert_origin = req.name
+            }
+            entry.amount = entry.amount + req.count
+            context.aggregate[agg_key] = entry
+          end
+        end
+      end
+      context.alert_index = context.alert_index + 1
+      processed = processed + 1
+    end
+  end
+  return false, processed
 end
 
 local function retire_unseen(configured, needed)
@@ -278,6 +369,7 @@ end
 
 function Demands.scan()
   local state = State.ensure()
+  state.scan_job = nil
   local configured = {}
   local needed = {}
   local groups = {}
@@ -292,6 +384,122 @@ function Demands.scan()
   publish_chest_groups(groups, needed)
   scan_alerts(configured, needed)
   retire_unseen(configured, needed)
+end
+
+local function sorted_scan_chests(chests)
+  local ids = {}
+  for unit_number in pairs(chests) do ids[#ids + 1] = unit_number end
+  table.sort(ids)
+  return ids
+end
+
+local function scan_players()
+  local force_indices = {}
+  for force_index in pairs(game.forces) do force_indices[#force_indices + 1] = force_index end
+  table.sort(force_indices)
+  local players = {}
+  for _, force_index in ipairs(force_indices) do
+    local force = game.forces[force_index]
+    local force_players = {}
+    for _, player in pairs(force.players or {}) do
+      if player.valid then force_players[#force_players + 1] = player end
+    end
+    table.sort(force_players, function(a, b) return a.index < b.index end)
+    for _, player in ipairs(force_players) do
+      players[#players + 1] = {force_index = force_index, player_index = player.index}
+    end
+  end
+  return players
+end
+
+function Demands.start_scan()
+  local state = State.ensure()
+  if state.scan_job then return false end
+  state.scan_job = {
+    phase = "chests",
+    chest_ids = sorted_scan_chests(state.chests),
+    chest_index = 1,
+    configured = {},
+    needed = {},
+    groups = {},
+    alert_players = scan_players(),
+    alert_index = 1,
+    alert_context = nil
+  }
+  return true
+end
+
+function Demands.scan_active()
+  return State.ensure().scan_job ~= nil
+end
+
+function Demands.step_scan(budget)
+  local state = State.ensure()
+  local job = state.scan_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.scan_work_per_tick)
+  local processed = 0
+  while processed < budget and job do
+    if job.phase == "chests" then
+      local unit_number = job.chest_ids[job.chest_index]
+      if not unit_number then
+        job.group_keys = {}
+        for key in pairs(job.groups) do job.group_keys[#job.group_keys + 1] = key end
+        table.sort(job.group_keys)
+        job.group_index = 1
+        job.phase = "publish"
+      else
+        local chest = game.get_entity_by_unit_number(unit_number)
+        if chest and chest.valid and chest.name == Constants.chest_name then
+          collect_chest(chest, job.configured, job.groups)
+        else
+          state.chests[unit_number] = nil
+        end
+        job.chest_index = job.chest_index + 1
+        processed = processed + 1
+      end
+    elseif job.phase == "publish" then
+      local key = job.group_keys[job.group_index]
+      if not key then
+        job.phase = "alerts"
+      else
+        publish_chest_group(job.groups[key], job.needed)
+        job.group_index = job.group_index + 1
+        processed = processed + 1
+      end
+    elseif job.phase == "alerts" then
+      local work = job.alert_players[job.alert_index]
+      if not work then
+        job.phase = "retire"
+      else
+        if not job.alert_context then
+          local force = game.forces[work.force_index]
+          local player = game.get_player(work.player_index)
+          if force and player and player.valid then
+            job.alert_context = start_alert_context(force, player)
+          else
+            job.alert_index = job.alert_index + 1
+          end
+          processed = processed + 1
+        else
+          local done, used = step_alert_context(job.alert_context, budget - processed, job.configured, job.needed)
+          processed = processed + used
+          if done then
+            job.alert_context = nil
+            job.alert_index = job.alert_index + 1
+          end
+        end
+      end
+    elseif job.phase == "retire" then
+      retire_unseen(job.configured, job.needed)
+      state.scan_job = nil
+      job = nil
+    else
+      state.scan_job = nil
+      job = nil
+    end
+  end
+  return state.scan_job == nil
 end
 
 function Demands.approve(request_id, player_index, automatic)

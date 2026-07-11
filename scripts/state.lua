@@ -24,6 +24,7 @@ function State.ensure()
   state.platform_options = state.platform_options or {}
   state.platform_status = state.platform_status or {}
   state.recent_returns = state.recent_returns or {}
+  state.scan_job = state.scan_job or nil
   state.next_request_id = state.next_request_id or 1
   if (state.schema_version or 1) < 2 then
     for _, tabs in pairs(state.gui_tabs) do
