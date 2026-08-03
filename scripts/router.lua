@@ -102,8 +102,9 @@ function Router.try_dispatch(request)
     request.last_reason = "No planet has enough provider stock"
     return false
   end
+  local match_reason
   for _, source in ipairs(sources) do
-    local platform = Platforms.find_matching(request, force, source.location, request.destination)
+    local platform, reason = Platforms.find_matching(request, force, source.location, request.destination)
     if platform then
       request.source = source.location
       request.source_surface_index = source.surface_index
@@ -116,9 +117,11 @@ function Router.try_dispatch(request)
       end
       State.release_reservation(request.id)
       request.last_reason = reason
+    elseif not match_reason then
+      match_reason = reason
     end
   end
-  request.last_reason = request.last_reason or "No enrolled platform has this route and enough cargo space"
+  request.last_reason = match_reason or request.last_reason or "No enrolled platform is currently eligible"
   return false
 end
 

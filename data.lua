@@ -23,7 +23,7 @@ if gui_styles then
   }
   gui_styles.il_metric_frame = {
     type = "frame_style", parent = "inside_shallow_frame_with_padding",
-    minimal_width = 170, height = 76, padding = 10, vertically_stretchable = "off", horizontally_stretchable = "on"
+    minimal_width = 120, height = 76, padding = 10, vertically_stretchable = "off", horizontally_stretchable = "on"
   }
   gui_styles.il_metric_value = {type = "label_style", parent = "heading_2_label", horizontal_align = "left"}
   gui_styles.il_metric_caption = {type = "label_style", parent = "label", horizontal_align = "left", font_color = {0.65, 0.65, 0.65}}
@@ -52,6 +52,12 @@ chest.icon = icon
 chest.icon_size = 64
 chest.minable = {mining_time = 0.2, result = chest_name}
 chest.next_upgrade = nil
+chest.flags = chest.flags or {}
+local has_unit_lookup = false
+for _, flag in pairs(chest.flags) do
+  if flag == "get-by-unit-number" then has_unit_lookup = true; break end
+end
+if not has_unit_lookup then chest.flags[#chest.flags + 1] = "get-by-unit-number" end
 
 data:extend({
   chest,

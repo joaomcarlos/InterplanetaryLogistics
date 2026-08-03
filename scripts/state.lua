@@ -10,6 +10,8 @@ function State.ensure()
     state.schema_version = Constants.schema_version
   end
   state.chests = state.chests or {}
+  state.landing_pads = state.landing_pads or {}
+  state.destinations_initialized = state.destinations_initialized or false
   state.requests = state.requests or {}
   state.request_by_key = state.request_by_key or {}
   state.suppressions = state.suppressions or {}
@@ -97,16 +99,32 @@ function State.get()
   return storage.interplanetary_logistics
 end
 
-function State.rebuild_chests()
+function State.rebuild_destinations()
   local state = State.ensure()
   state.chests = {}
+  state.landing_pads = {}
   for _, surface in pairs(game.surfaces) do
     for _, chest in pairs(surface.find_entities_filtered({name = Constants.chest_name})) do
       if chest.valid and chest.unit_number then
         state.chests[chest.unit_number] = true
       end
     end
+    for _, pad in pairs(surface.find_entities_filtered({type = "cargo-landing-pad"})) do
+      if pad.valid and pad.unit_number then
+        state.landing_pads[pad.unit_number] = true
+      end
+    end
   end
+  state.destinations_initialized = true
+end
+
+function State.ensure_destinations()
+  local state = State.ensure()
+  if not state.destinations_initialized then
+    State.rebuild_destinations()
+    state = State.ensure()
+  end
+  return state
 end
 
 function State.add_history(request, status, reason)

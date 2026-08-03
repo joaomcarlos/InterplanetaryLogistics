@@ -135,6 +135,7 @@ local function find_destination_pad(request, force)
   for _, pad in pairs(surface.find_entities_filtered({type = "cargo-landing-pad", force = force})) do
     fallback = fallback or pad
     local network = pad.logistic_network
+      or surface.find_logistic_network_by_position(pad.position, force)
     if desired_network_id and network and network.valid and network.network_id == desired_network_id then
       return pad
     end
@@ -200,18 +201,25 @@ function Platforms.find_matching(request, force, source, destination)
   local state = State.ensure()
   local enrolled = state.enrolled[force.index] or {}
   local matches = {}
+  local enrolled_count, idle_count, route_count, capacity_count = 0, 0, 0, 0
   for _, platform in pairs(force.platforms) do
-    if platform.valid and enrolled[platform.index] and not state.platform_transfers[platform.index] then
-      local schedule = platform.schedule
-      if schedule_has_location(schedule, source) and schedule_has_location(schedule, destination) then
-        local capacity = platform_capacity(platform, request)
-        if capacity >= request.amount then
-          matches[#matches + 1] = {
-            platform = platform,
-            capacity = capacity,
-            eta = Platforms.estimate_ticks_to(platform, source) or math.huge,
-            pinned = State.get_route_preference(force.index, source, destination) == platform.index
-          }
+    if platform.valid and enrolled[platform.index] then
+      enrolled_count = enrolled_count + 1
+      if not state.platform_transfers[platform.index] then
+        idle_count = idle_count + 1
+        local schedule = platform.schedule
+        if schedule_has_location(schedule, source) and schedule_has_location(schedule, destination) then
+          route_count = route_count + 1
+          local capacity = platform_capacity(platform, request)
+          if capacity >= request.amount then
+            capacity_count = capacity_count + 1
+            matches[#matches + 1] = {
+              platform = platform,
+              capacity = capacity,
+              eta = Platforms.estimate_ticks_to(platform, source) or math.huge,
+              pinned = State.get_route_preference(force.index, source, destination) == platform.index
+            }
+          end
         end
       end
     end
@@ -224,7 +232,12 @@ function Platforms.find_matching(request, force, source, destination)
     end
     return a.capacity < b.capacity
   end)
-  return matches[1] and matches[1].platform or nil
+  if matches[1] then return matches[1].platform end
+  if enrolled_count == 0 then return nil, "No platforms are enrolled for this force" end
+  if idle_count == 0 then return nil, "All enrolled platforms are currently delivering other requests" end
+  if route_count == 0 then return nil, "No available enrolled platform has both " .. source .. " and " .. destination .. " in its schedule" end
+  if capacity_count == 0 then return nil, "Available routed platforms do not have space for " .. request.amount .. " items" end
+  return nil, "No enrolled platform is currently eligible"
 end
 
 local function is_transfer_record(record, transfer, station, comparator, constant)

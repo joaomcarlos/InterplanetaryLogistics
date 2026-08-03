@@ -5,24 +5,58 @@ local Platforms = require("scripts.platforms")
 local Gui = require("scripts.gui")
 local Util = require("scripts.util")
 
-local function register_chest(entity)
-  if entity and entity.valid and entity.name == Constants.chest_name and entity.unit_number then
-    State.ensure().chests[entity.unit_number] = true
+local function destination_kind(entity)
+  if not entity or not entity.valid then return nil end
+  if entity.name == Constants.chest_name then return "chest" end
+  if entity.type == "cargo-landing-pad" then return "landing-pad" end
+  return nil
+end
+
+local function register_destination(entity)
+  local kind = destination_kind(entity)
+  if not kind or not entity.unit_number then return end
+  local state = State.ensure()
+  if kind == "chest" then
+    state.chests[entity.unit_number] = true
+  else
+    state.landing_pads[entity.unit_number] = true
   end
 end
 
-local function unregister_chest(entity)
-  if entity and entity.unit_number then
-    State.ensure().chests[entity.unit_number] = nil
+local function refresh_force_destinations(force_index)
+  if not force_index then return end
+  for _, player in pairs(game.connected_players or {}) do
+    if player.valid and player.force and player.force.index == force_index then
+      Gui.refresh_destinations_structure(player)
+    end
+  end
+end
+
+local function unregister_destination(entity, kind)
+  if not entity or not entity.unit_number or not kind then return end
+  local state = State.ensure()
+  if kind == "chest" then
+    state.chests[entity.unit_number] = nil
+  else
+    state.landing_pads[entity.unit_number] = nil
   end
 end
 
 local function on_built(event)
-  register_chest(event.entity or event.created_entity or event.destination)
+  local entity = event.entity or event.created_entity or event.destination
+  local kind = destination_kind(entity)
+  register_destination(entity)
+  if kind then
+    refresh_force_destinations(entity.force.index)
+  end
 end
 
 local function on_removed(event)
-  unregister_chest(event.entity)
+  local entity = event.entity
+  local kind = destination_kind(entity)
+  local force_index = kind and entity.force.index or nil
+  unregister_destination(entity, kind)
+  refresh_force_destinations(force_index)
 end
 
 local function parse_id(name, prefix)
@@ -120,7 +154,7 @@ end
 
 local function initialize()
   State.ensure()
-  State.rebuild_chests()
+  State.rebuild_destinations()
   Platforms.refresh_fleet()
 end
 

@@ -83,6 +83,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - Native list views use one scrollbar per axis; Delivery Fleet is separate from Other Platforms and both are sorted by ship name.
 - Native Factorio GUI work is expected to be production-ready and highly polished by default; visual hierarchy, spacing, native styles, interaction states, responsive sizing, tooltips, empty states, and in-game QA are part of completion.
 - Dashboard controls that are visually square use square native utility-sprite buttons with localized tooltips; do not introduce a custom sprite-based design system.
+- Construction requests must preserve the exact item, quality, and outstanding count represented by construction-registered ghosts and item-request proxies; alert wrapper prototypes are not demand data.
+- Destinations include cargo landing pads on every planet as well as Interplanetary Requester Chests, and network-scoped deliveries must select a landing pad in the destination construction network.
 
 ## Project Overview
 

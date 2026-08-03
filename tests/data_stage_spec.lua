@@ -42,6 +42,10 @@ package.loaded.data = nil
 require("data")
 
 assert(extended["logistic-container/interplanetary-requester-chest"])
+local chest_flags = extended["logistic-container/interplanetary-requester-chest"].flags or {}
+local has_unit_lookup = false
+for _, flag in pairs(chest_flags) do if flag == "get-by-unit-number" then has_unit_lookup = true end end
+assert(has_unit_lookup, "requester chest must support lookup by unit number")
 assert(extended["item/interplanetary-requester-chest"].place_result == "interplanetary-requester-chest")
 assert(extended["recipe/interplanetary-requester-chest"].enabled == true)
 assert(type(extended["shortcut/il-toggle-dashboard"].icon) == "string")

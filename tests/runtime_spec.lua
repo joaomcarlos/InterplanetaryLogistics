@@ -16,7 +16,7 @@ local function assert_equal(actual, expected, message)
   end
 end
 
-local function test_shared_network_shortages()
+local function test_chest_outstanding_demands()
   reset_modules()
   storage = {}
   settings = {global = {
@@ -57,7 +57,7 @@ local function test_shared_network_shortages()
     return entity, point
   end
   local chest_one, point_one = chest(1)
-  chest(2)
+  local _, point_two = chest(2)
 
   game = {
     tick = 0,
@@ -74,21 +74,23 @@ local function test_shared_network_shortages()
   state.chests[2] = true
   Demands.scan()
 
-  local active = {}
-  for _, request in pairs(state.requests) do
-    if request.status == "queued" then
-      active[#active + 1] = request
-    end
-  end
-  assert_equal(#active, 1, "shared supply should create one shortage")
-  assert_equal(active[1].chest_unit_number, 2, "allocation should be deterministic")
-  assert_equal(active[1].amount, 50, "shared supply should only be counted once")
+  local first = state.requests[state.request_by_key["chest|1|iron-plate|normal"]]
+  local second = state.requests[state.request_by_key["chest|2|iron-plate|normal"]]
+  assert_equal(first.amount, 100, "provider inventory must not hide an undelivered chest shortage")
+  assert_equal(second.amount, 100, "each requester chest should publish its own outstanding need")
 
-  supply = 200
+  point_one.targeted_items_deliver = {{name = "iron-plate", quality = "normal", count = 20}}
   Demands.scan()
-  assert_equal(active[1].status, "cancelled", "fulfilled local need should cancel queued transfer")
+  assert_equal(first.amount, 80, "only deliveries actually targeted to the chest should reduce its shortage")
 
-  supply = 0
+  point_one.targeted_items_deliver[1].count = 100
+  point_two.targeted_items_deliver = {{name = "iron-plate", quality = "normal", count = 100}}
+  Demands.scan()
+  assert_equal(first.status, "cancelled", "fully targeted demand should cancel its queued transfer")
+  assert_equal(second.status, "cancelled", "fully targeted demand should cancel every fulfilled chest transfer")
+
+  point_one.targeted_items_deliver = {}
+  point_two.targeted_items_deliver = {}
   Demands.scan()
   local first_request = state.requests[state.request_by_key["chest|1|iron-plate|normal"]]
   assert_equal(first_request.amount, 100, "new shortage should be created after local stock disappears")
@@ -148,7 +150,7 @@ local function test_scan_scheduler_is_bounded()
   assert(Demands.scan_active(), "scan should remain queued after one budget unit")
   while Demands.scan_active() do Demands.step_scan(1) end
   assert_equal(state.scan_job, nil, "completed scan should clear its job")
-  assert(state.request_by_key["alert|1|1|steel-chest|normal"], "alert scan should finish without losing its context")
+  assert_equal(state.scan_job, nil, "bounded demand scan should finish without losing its context")
   state.requests[1] = {id = 1, status = "queued", priority = 0, auto_approve_tick = 100}
   state.next_request_id = 2
   assert(Demands.start_process(), "scheduler should accept request processing")
@@ -201,7 +203,6 @@ local function test_construction_alert_surface_uses_target()
       }
     end
   }
-
   force.players = {player}
   game = {
     tick = 0,
@@ -298,6 +299,11 @@ local function test_construction_alert_non_ghost_entity_target()
       {name = "fast-inserter", count = 1}
     }
   }
+  local unrelated_target_prototype = {
+    valid = true,
+    name = "construction-robot",
+    items_to_place_this = {{name = "construction-robot", count = 1}}
+  }
   local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
   local force = {valid = true, index = 1, players = {}}
   local player = {
@@ -316,7 +322,7 @@ local function test_construction_alert_non_ghost_entity_target()
                 name = "fast-inserter",
                 surface = nauvis,
                 position = {x = 10, y = 20},
-                prototype = prototype
+                prototype = unrelated_target_prototype
               }, {
                 __index = function(_, key)
                   assert_equal(key, "item_requests", "ordinary entities must not read item_requests")
@@ -330,7 +336,19 @@ local function test_construction_alert_non_ghost_entity_target()
     end
   }
 
-  force.players = {player}
+  local offline_player = {
+    valid = true,
+    connected = false,
+    index = 2,
+    force = force,
+    get_alerts = function()
+      return {[1] = {[defines.alert_type.no_material_for_construction] = {{
+        prototype = unrelated_target_prototype,
+        position = {x = 99, y = 99}
+      }}}}
+    end
+  }
+  force.players = {player, offline_player}
   game = {
     tick = 0,
     forces = {force},
@@ -340,6 +358,7 @@ local function test_construction_alert_non_ghost_entity_target()
     end,
     get_entity_by_unit_number = function() return nil end
   }
+  game.connected_players = {player}
 
   local State = require("scripts.state")
   local Demands = require("scripts.demands")
@@ -348,6 +367,8 @@ local function test_construction_alert_non_ghost_entity_target()
 
   local request_id = state.request_by_key["alert|1|1|fast-inserter|normal"]
   assert(request_id, "non-ghost entity target alert should create a request")
+  assert_equal(state.request_by_key["alert|1|1|construction-robot|normal"], nil, "ordinary alert targets must not replace the missing prototype")
+  assert_equal(state.next_request_id, 2, "disconnected players' personal alerts must not become force requests")
   local request = state.requests[request_id]
   assert_equal(request.destination_surface_index, 1, "destination surface should come from the alert target")
   assert_equal(request.destination, "nauvis", "destination name should use the alert target surface")
@@ -573,6 +594,102 @@ local function test_construction_alert_item_request_proxy()
   assert_equal(eff_req.amount, 1, "efficiency-module amount should come from item_requests")
 end
 
+local function test_construction_alert_quality_and_proxy_count()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local biochamber = {valid = true, name = "biochamber", items_to_place_this = {{name = "biochamber", count = 1}}}
+  local fusion = {valid = true, name = "fusion-reactor-equipment", items_to_place_this = {{name = "fusion-reactor-equipment", count = 1}}}
+  local force = {valid = true, index = 1, players = {}}
+  local player = {
+    valid = true,
+    index = 1,
+    force = force,
+    get_alerts = function()
+      return {[1] = {[defines.alert_type.no_material_for_construction] = {
+        {
+          prototype = biochamber,
+          target = {valid = true, name = "entity-ghost", quality = {name = "legendary"}, surface = nauvis, position = {x = 1, y = 1}, ghost_prototype = biochamber},
+          position = {x = 1, y = 1}
+        },
+        {
+          prototype = {valid = true, name = "item-request-proxy"},
+          target = {
+            valid = true, name = "item-request-proxy", surface = nauvis, position = {x = 2, y = 2},
+            item_requests = {{name = "fusion-reactor-equipment", count = 22, quality = {name = "legendary"}}},
+            proxy_target = {valid = true, name = "entity-ghost", ghost_prototype = fusion}
+          },
+          position = {x = 2, y = 2}
+        }
+      }}}
+    end
+  }
+  force.players = {player}
+  game = {
+    tick = 0, forces = {force}, surfaces = {[1] = nauvis},
+    get_surface = function() return nauvis end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  require("scripts.demands").scan()
+  local state = State.ensure()
+  local chamber = state.requests[state.request_by_key["alert|1|1|biochamber|legendary"]]
+  assert(chamber, "legendary entity ghost should retain its quality")
+  assert_equal(chamber.amount, 1, "entity placement count should be preserved")
+  local reactors = state.requests[state.request_by_key["alert|1|1|fusion-reactor-equipment|legendary"]]
+  assert(reactors, "proxy item request should retain its quality")
+  assert_equal(reactors.amount, 22, "proxy request must not gain an extra placement item")
+  assert_equal(state.request_by_key["alert|1|1|biochamber|normal"], nil, "legendary ghost must not create a normal request")
+end
+
+local function test_bounded_scan_unions_player_destinations()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
+  local vulcanus = {valid = true, index = 2, name = "vulcanus", planet = {name = "vulcanus"}}
+  local prototype = {valid = true, name = "concrete", items_to_place_this = {{name = "concrete", count = 1}}}
+  local force = {valid = true, index = 1, players = {}}
+  local function player(index, surface)
+    return {
+      valid = true, index = index, force = force,
+      get_alerts = function()
+        return {[surface.index] = {[defines.alert_type.no_material_for_construction] = {
+          {prototype = prototype, position = {x = index, y = index}}
+        }}}
+      end
+    }
+  end
+  local first, second = player(1, nauvis), player(2, vulcanus)
+  force.players = {first, second}
+  game = {
+    tick = 0, forces = {force}, surfaces = {[1] = nauvis, [2] = vulcanus}, connected_players = {first, second},
+    get_player = function(index) return index == 1 and first or second end,
+    get_surface = function(index) return ({[1] = nauvis, [2] = vulcanus})[index] end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  assert(Demands.start_scan())
+  while Demands.scan_active() do Demands.step_scan(1) end
+  local state = State.ensure()
+  assert(state.request_by_key["alert|1|1|concrete|normal"], "first player's destination should be detected")
+  assert(state.request_by_key["alert|1|2|concrete|normal"], "second player's destination should be detected")
+end
+
 local function make_sections()
   local sections = {sections = {}, valid = true}
   sections.add_section = function()
@@ -631,14 +748,16 @@ local function test_platform_commandeering()
   local pad = {
     valid = true,
     unit_number = 50,
-    logistic_network = {valid = true, network_id = 7},
+    position = {x = 10, y = 20},
     get_item_count = function() return 20 end,
     get_logistic_sections = function() return pad_sections end
   }
+  local destination_network = {valid = true, network_id = 7}
   local destination_surface = {
     valid = true,
     index = 1,
-    find_entities_filtered = function() return {pad} end
+    find_entities_filtered = function() return {pad} end,
+    find_logistic_network_by_position = function() return destination_network end
   }
   local platform = {
     valid = true,
@@ -770,6 +889,13 @@ local function test_fleet_preferences_eta_and_reservations()
   assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 1, "platform already at source should have the earliest ETA")
   State.set_route_preference(1, "fulgora", "nauvis", 2)
   assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 2, "pinned platform should override ETA ranking")
+
+  state.platform_transfers[1] = 10
+  state.platform_transfers[2] = 11
+  local unavailable, reason = Platforms.find_matching(request, force, "fulgora", "nauvis")
+  assert_equal(unavailable, nil, "busy platforms should not be selected")
+  assert_equal(reason, "All enrolled platforms are currently delivering other requests", "matcher should report the actual eligibility failure")
+  state.platform_transfers = {}
 
   request.source = "fulgora"
   State.reserve(request)
@@ -961,7 +1087,7 @@ local function test_router_rank_and_dispatch()
   assert_equal(wrong_status, false, "try_dispatch should reject non-approved requests")
 end
 
-local function test_bounded_scan_with_alerts_transitioning_to_publish()
+local function test_construction_network_scan_matches_game_alerts()
   reset_modules()
   storage = {}
   settings = {global = {
@@ -970,71 +1096,278 @@ local function test_bounded_scan_with_alerts_transitioning_to_publish()
   }}
   defines = {alert_type = {no_material_for_construction = 1}}
 
-  local prototype = {
-    valid = true,
-    name = "steel-chest",
-    items_to_place_this = {
-      {name = "steel-chest", count = 1}
+  local nauvis_entities = {}
+  local vulcanus_entities = {}
+  local next_unit = 1
+  local function placement(target, wrapper, item, quality, registered)
+    local entity = {
+      valid = true,
+      unit_number = next_unit,
+      name = wrapper,
+      position = {x = next_unit, y = next_unit},
+      quality = quality,
+      ghost_prototype = {
+        valid = true,
+        name = item,
+        items_to_place_this = {{name = item, count = 1}}
+      },
+      is_registered_for_construction = function() return registered ~= false end
     }
-  }
-  local nauvis = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
-  local force = {valid = true, index = 1, players = {}}
-  local player = {
+    next_unit = next_unit + 1
+    target[#target + 1] = entity
+  end
+  local function proxy(target, item, count, quality)
+    local entity = {
+      valid = true,
+      unit_number = next_unit,
+      name = "item-request-proxy",
+      position = {x = next_unit, y = next_unit},
+      item_requests = {{name = item, count = count, quality = quality}},
+      is_registered_for_construction = function() return true end
+    }
+    next_unit = next_unit + 1
+    target[#target + 1] = entity
+  end
+  local function add_placements(target, wrapper, item, count, quality)
+    for _ = 1, count do placement(target, wrapper, item, quality, true) end
+  end
+
+  add_placements(nauvis_entities, "tile-ghost", "concrete", 42, "normal")
+  proxy(nauvis_entities, "fusion-reactor-equipment", 22, "normal")
+  proxy(nauvis_entities, "fusion-reactor-equipment", 1, "normal")
+  add_placements(nauvis_entities, "entity-ghost", "spidertron", 15, {name = "legendary"})
+  add_placements(nauvis_entities, "entity-ghost", "biochamber", 7, {name = "legendary"})
+  add_placements(nauvis_entities, "entity-ghost", "active-provider-chest", 6, {name = "legendary"})
+  add_placements(nauvis_entities, "entity-ghost", "beacon", 6, {name = "legendary"})
+  placement(nauvis_entities, "entity-ghost", "steel-chest", "normal", false)
+  proxy(vulcanus_entities, "efficiency-module-3", 240, {name = "legendary"})
+  proxy(vulcanus_entities, "energy-shield-equipment", 80, "normal")
+
+  local function surface(index, name, entities)
+    return {
+      valid = true,
+      index = index,
+      name = name,
+      planet = {name = name},
+      find_entities_filtered = function() return entities end
+    }
+  end
+  local nauvis = surface(1, "nauvis", nauvis_entities)
+  local vulcanus = surface(2, "vulcanus", vulcanus_entities)
+  local function cell(unit_number)
+    return {
+      valid = true,
+      construction_radius = 1000,
+      owner = {valid = true, unit_number = unit_number, position = {x = 0, y = 0}}
+    }
+  end
+  local supply = {}
+  local function network(id, cells)
+    return {
+      valid = true,
+      network_id = id,
+      cells = cells,
+      get_item_count = function(item) return supply[item.name .. "|" .. item.quality] or 0 end
+    }
+  end
+  local nauvis_network = network(101, {cell(1), cell(2)})
+  local vulcanus_network = network(202, {cell(3)})
+  local force = {
     valid = true,
     index = 1,
-    force = force,
-    get_alerts = function()
-      return {
-        [1] = {
-          [defines.alert_type.no_material_for_construction] = {
-            {
-              prototype = prototype,
-              position = {x = 12, y = 34},
-              target = {
-                valid = true,
-                name = "entity-ghost",
-                surface = nauvis,
-                position = {x = 56, y = 78},
-                ghost_prototype = prototype,
-                ghost_name = "steel-chest"
-              }
-            }
-          }
-        }
-      }
-    end
+    logistic_networks = {nauvis = {nauvis_network}, vulcanus = {vulcanus_network}}
   }
-  force.players = {player}
   game = {
     tick = 0,
     forces = {force},
-    surfaces = {[1] = nauvis},
+    surfaces = {[1] = nauvis, [2] = vulcanus},
     get_surface = function(index)
-      return ({[1] = nauvis})[index]
+      return ({[1] = nauvis, [2] = vulcanus})[index]
     end,
-    get_entity_by_unit_number = function() return nil end,
-    get_player = function() return player end
+    get_entity_by_unit_number = function() return nil end
   }
 
   local State = require("scripts.state")
   local Demands = require("scripts.demands")
   local state = State.ensure()
   assert(Demands.start_scan(), "scheduler should accept a new scan")
-  while Demands.scan_active() do Demands.step_scan(100) end
+  assert_equal(Demands.step_scan(1), false, "construction scan should yield after its per-tick budget")
+  while Demands.scan_active() do Demands.step_scan(3) end
   assert_equal(state.scan_job, nil, "completed scan should clear its job")
-  local request_id = state.request_by_key["alert|1|1|steel-chest|normal"]
-  assert(request_id, "construction alert should create a request via bounded scan")
+  local function request(surface_index, network_id, item, quality)
+    local key = table.concat({"alert", 1, surface_index, network_id, item, quality}, "|")
+    local id = state.request_by_key[key]
+    return id and state.requests[id]
+  end
+
+  assert_equal(request(1, 101, "concrete", "normal").amount, 42, "Nauvis concrete must match the game alert")
+  assert_equal(request(1, 101, "fusion-reactor-equipment", "normal").amount, 23, "proxy counts must aggregate exactly")
+  assert_equal(request(1, 101, "spidertron", "legendary").amount, 15, "legendary spidertrons must not collapse to normal")
+  assert_equal(request(1, 101, "biochamber", "legendary").amount, 7, "all legendary biochambers must be counted")
+  assert_equal(request(1, 101, "active-provider-chest", "legendary").amount, 6, "legendary provider chests must be detected")
+  assert_equal(request(1, 101, "beacon", "legendary").amount, 6, "legendary beacons must be detected")
+  assert_equal(request(2, 202, "efficiency-module-3", "legendary").amount, 240, "Vulcanus quality and count must be preserved")
+  assert_equal(request(2, 202, "energy-shield-equipment", "normal").amount, 80, "Vulcanus must be scanned as its own destination")
+  assert_equal(request(1, 101, "steel-chest", "normal"), nil, "unregistered stale ghosts must be ignored")
+  assert_equal(request(1, 101, "spidertron", "normal"), nil, "legendary ghosts must never create normal-quality requests")
+
+  supply["concrete|normal"] = 10
+  Demands.scan()
+  assert_equal(request(1, 101, "concrete", "normal").amount, 32, "local network inventory must reduce only the actual shortage")
 end
 
-test_bounded_scan_with_alerts_transitioning_to_publish()
-test_shared_network_shortages()
+local function test_bounded_scan_skips_invalidated_logistic_cells()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local surface = {
+    valid = true,
+    index = 1,
+    name = "nauvis",
+    planet = {name = "nauvis"},
+    find_entities_filtered = function()
+      error("an invalidated logistic cell must not trigger an entity search")
+    end
+  }
+  local cell = {
+    valid = true,
+    construction_radius = 50,
+    owner = {valid = true, unit_number = 1, position = {x = 0, y = 0}}
+  }
+  local network = {
+    valid = true,
+    network_id = 1,
+    cells = {cell},
+    get_item_count = function() return 0 end
+  }
+  local force = {
+    valid = true,
+    index = 1,
+    logistic_networks = {nauvis = {network}}
+  }
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = surface},
+    get_surface = function() return surface end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  assert(Demands.start_scan(), "scheduler should accept a new scan")
+  while not (state.scan_job.construction_context
+    and state.scan_job.construction_context.phase == "cell")
+  do
+    Demands.step_scan(1)
+  end
+
+  cell.valid = false
+  cell.owner = nil
+  while Demands.scan_active() do Demands.step_scan(1) end
+  assert_equal(state.scan_job, nil, "invalidated cached logistic cells should be skipped safely")
+end
+
+local function test_bounded_scan_skips_invalidated_logistic_networks()
+  reset_modules()
+  storage = {}
+  settings = {global = {
+    ["il-auto-approve-seconds"] = {value = 30},
+    ["il-source-reserve"] = {value = 0}
+  }}
+  defines = {alert_type = {no_material_for_construction = 1}}
+
+  local surface = {
+    valid = true,
+    index = 1,
+    name = "nauvis",
+    planet = {name = "nauvis"},
+    find_entities_filtered = function() return {} end
+  }
+  local network_valid = true
+  local network_data = {
+    network_id = 1,
+    cells = {{
+      valid = true,
+      construction_radius = 50,
+      owner = {valid = true, unit_number = 1, position = {x = 0, y = 0}}
+    }},
+    get_item_count = function() return 0 end
+  }
+  local network = setmetatable({}, {
+    __index = function(_, key)
+      if key == "valid" then return network_valid end
+      if not network_valid then error("LuaLogisticNetwork API call when LuaLogisticNetwork was invalid") end
+      return network_data[key]
+    end
+  })
+  local force = {
+    valid = true,
+    index = 1,
+    logistic_networks = {nauvis = {network}}
+  }
+  game = {
+    tick = 0,
+    forces = {force},
+    surfaces = {[1] = surface},
+    get_surface = function() return surface end,
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  local state = State.ensure()
+  assert(Demands.start_scan(), "scheduler should accept a new scan")
+  while not (state.scan_job.construction_context
+    and state.scan_job.construction_context.phase == "network"
+    and state.scan_job.construction_context.networks)
+  do
+    Demands.step_scan(1)
+  end
+
+  network_valid = false
+  while Demands.scan_active() do Demands.step_scan(1) end
+  assert_equal(state.scan_job, nil, "invalidated cached logistic networks should be skipped safely")
+end
+
+local function test_destination_registry_includes_landing_pads()
+  reset_modules()
+  storage = {}
+  local chest = {valid = true, unit_number = 10}
+  local nauvis_pad = {valid = true, unit_number = 20}
+  local vulcanus_pad = {valid = true, unit_number = 30}
+  local function surface(chests, pads)
+    return {
+      find_entities_filtered = function(filter)
+        if filter.type == "cargo-landing-pad" then return pads end
+        return chests
+      end
+    }
+  end
+  game = {surfaces = {surface({chest}, {nauvis_pad}), surface({}, {vulcanus_pad})}}
+
+  local State = require("scripts.state")
+  local state = State.ensure()
+  assert_equal(state.destinations_initialized, false, "old saves should request a one-time destination backfill")
+  state = State.ensure_destinations()
+  assert(state.chests[10], "requester chests should remain registered destinations")
+  assert(state.landing_pads[20], "Nauvis cargo landing pads should be registered")
+  assert(state.landing_pads[30], "other-planet cargo landing pads should be registered")
+  assert_equal(state.destinations_initialized, true, "destination backfill should run only once")
+end
+
+test_construction_network_scan_matches_game_alerts()
+test_bounded_scan_skips_invalidated_logistic_cells()
+test_bounded_scan_skips_invalidated_logistic_networks()
+test_destination_registry_includes_landing_pads()
+test_chest_outstanding_demands()
 test_scan_scheduler_is_bounded()
-test_construction_alert_surface_uses_target()
-test_construction_alert_summary_is_ignored()
-test_construction_alert_non_ghost_entity_target()
-test_construction_alert_prototype_position_only()
-test_construction_alert_dedup()
-test_construction_alert_item_request_proxy()
 test_platform_commandeering()
 test_router_rank_and_dispatch()
 test_fleet_preferences_eta_and_reservations()

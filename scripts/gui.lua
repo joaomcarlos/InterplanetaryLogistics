@@ -32,27 +32,29 @@ local function layout(player)
   local scale = player.display_scale or 1
   local available_width = math.floor(resolution.width / scale) - 32
   local available_height = math.floor(resolution.height / scale) - 32
-  local frame_width = math.max(960, math.min(1500, available_width))
-  local frame_height = math.max(560, math.min(840, available_height))
-  local navigation_width = 188
+  local frame_width = math.max(1, math.min(1500, available_width))
+  local frame_height = math.max(1, math.min(840, available_height))
+  local navigation_width = frame_width < 1100 and 160 or 188
   local content_width = frame_width - navigation_width - 24
+  local view_width = content_width - 16
   local compact = content_width < 1000
-  local detail_width = compact and 280 or 340
-  local request_list_width = content_width - detail_width - 10
+  local detail_width = compact and 240 or 340
+  local request_list_width = view_width - detail_width - 8
+  local table_insets = 28 -- row/header padding plus the vertical scrollbar gutter
   local function expand_last(widths, available)
     local total = 0
     for _, width in ipairs(widths) do total = total + width end
     widths[#widths] = widths[#widths] + math.max(0, available - total)
     return widths
   end
-  local fleet_widths = compact and {125, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
+  local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
   local request_widths = compact and {135, 105, 75, 0, 0, 108} or {190, 160, 90, 115, 70, 160}
   local destination_widths = compact and {200, 280, 220} or {270, 420, 360}
   local history_widths = compact and {180, 170, 90, 250} or {250, 250, 110, 430}
-  expand_last(fleet_widths, content_width - 16)
-  expand_last(destination_widths, content_width - 16)
-  expand_last(history_widths, content_width - 16)
-  expand_last(request_widths, request_list_width - 16)
+  expand_last(fleet_widths, view_width - table_insets)
+  expand_last(destination_widths, view_width - table_insets)
+  expand_last(history_widths, view_width - table_insets)
+  expand_last(request_widths, request_list_width - table_insets)
   return {
     frame_width = frame_width,
     frame_height = frame_height,
@@ -61,7 +63,7 @@ local function layout(player)
     request_list_width = request_list_width,
     detail_width = detail_width,
     compact = compact,
-    list_height = math.max(330, frame_height - 235),
+    list_height = math.max(180, frame_height - 235),
     fleet = fleet_widths,
     requests = request_widths,
     destinations = destination_widths,
@@ -187,7 +189,7 @@ end
 local function platform_task(snapshot, state)
   local request = snapshot.request_id and state.requests[snapshot.request_id]
   if not request then return {"il-gui.no-task"} end
-  return {"", request.amount, " × [item=", request.item, "] ", request.source or "?", " → ", request.destination or "?"}
+  return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ", request.source or "?", " → ", request.destination or "?"}
 end
 
 local function build_platform_rows(parent, player, enrolled)
@@ -320,7 +322,10 @@ local function build_request_rows(parent, player, attention)
   for _, request in ipairs(requests) do
     local row = parent.add({type = "frame", direction = "horizontal", style = attention and "il_list_row_attention" or "il_list_row"})
     row.style.horizontally_stretchable = true
-    local item = row.add({type = "label", name = "il-request-item-" .. request.id, caption = {"", "[item=", request.item, "] ", request.amount, " × ", item_localised_name(request.item)}})
+    local item = row.add({type = "label", name = "il-request-item-" .. request.id, caption = {
+      "", "[item=", request.item, ",quality=", request.quality or "normal", "] ", request.amount, " × ",
+      "[quality=", request.quality or "normal", "] ", item_localised_name(request.item)
+    }})
     set_width(item, widths[1])
     item.style.single_line = true
     if request.id == selected_id then item.style.font_color = accent_colors.orange end
@@ -382,7 +387,8 @@ local function add_detail_line(parent, label, value, color)
   local key = row.add({type = "label", caption = label, style = "il_detail_label"})
   key.style.width = 92
   local value_label = row.add({type = "label", caption = value or "-", style = "il_detail_value"})
-  value_label.style.single_line = true
+  value_label.style.single_line = false
+  value_label.style.maximal_width = 210
   if color then value_label.style.font_color = color end
 end
 
@@ -427,12 +433,10 @@ local function build_request_detail(parent, player)
   local item_row = parent.add({type = "flow", direction = "horizontal"})
   item_row.style.vertical_align = "center"
   item_row.style.bottom_margin = 8
-  local item_icon = item_row.add({type = "sprite", sprite = "item/" .. request.item})
-  item_icon.resize_to_sprite = false
+  local item_icon = item_row.add({type = "sprite-button", sprite = "item/" .. request.item, quality = request.quality or "normal", style = "slot_button"})
   item_icon.style.size = 42
-  item_icon.style.stretch_image_to_widget_size = true
   local item_labels = item_row.add({type = "flow", direction = "vertical"})
-  item_labels.add({type = "label", caption = item_localised_name(request.item), style = "il_detail_title"})
+  item_labels.add({type = "label", caption = {"", "[quality=", request.quality or "normal", "] ", item_localised_name(request.item)}, style = "il_detail_title"})
   item_labels.add({type = "label", caption = tostring(request.amount), style = "il_muted_label"})
   parent.add({type = "line", direction = "horizontal"})
   local color = status_colors[request.status] or status_colors.idle
@@ -508,52 +512,74 @@ local function build_requests(parent, player)
   attention_rows.style.horizontally_stretchable = true
   build_request_rows(attention_rows, player, true)
 
-  local detail = body.add({type = "frame", name = "il-request-detail", direction = "vertical", style = "il_detail_frame"})
+  local detail = body.add({type = "scroll-pane", name = "il-request-detail", direction = "vertical", style = "il_scroll_pane"})
   detail.style.width = sizes.detail_width
   detail.style.minimal_height = sizes.list_height + 34
   detail.style.maximal_height = sizes.list_height + 34
+  detail.style.padding = 10
+  detail.vertical_scroll_policy = "auto"
+  detail.horizontal_scroll_policy = "never"
   build_request_detail(detail, player)
 end
 
-local function chest_list(player)
+local function destination_list(player)
   local list = {}
-  for unit_number in pairs(State.ensure().chests) do
-    local chest = game.get_entity_by_unit_number(unit_number)
-    if chest and chest.valid and chest.force and chest.force.index == player.force.index then list[#list + 1] = chest end
+  local state = State.ensure_destinations()
+  local function add(unit_number, kind)
+    local entity = game.get_entity_by_unit_number(unit_number)
+    if entity and entity.valid and entity.force and entity.force.index == player.force.index then
+      list[#list + 1] = {entity = entity, kind = kind}
+    end
   end
+  for unit_number in pairs(state.chests) do add(unit_number, "chest") end
+  for unit_number in pairs(state.landing_pads) do add(unit_number, "landing-pad") end
   table.sort(list, function(a, b)
-    local ap, bp = Util.surface_location(a.surface), Util.surface_location(b.surface)
-    if ap == bp then return a.unit_number < b.unit_number end
+    local ap = Util.surface_location(a.entity.surface)
+    local bp = Util.surface_location(b.entity.surface)
+    if ap == bp then
+      if a.kind == b.kind then return a.entity.unit_number < b.entity.unit_number end
+      return a.kind < b.kind
+    end
     return ap < bp
   end)
   return list
 end
 
+local function destination_network(destination, player)
+  local entity = destination.entity
+  if destination.kind == "chest" then
+    local point = entity.get_requester_point()
+    return point and point.logistic_network
+  end
+  return entity.logistic_network
+    or entity.surface.find_logistic_network_by_position(entity.position, player.force)
+end
+
 local function build_destination_rows(rows, player)
-  local chests = chest_list(player)
+  local destinations = destination_list(player)
   local widths = layout(player).destinations
-  for _, chest in ipairs(chests) do
+  for _, destination in ipairs(destinations) do
+    local entity = destination.entity
     local row = rows.add({type = "frame", direction = "horizontal", style = "il_list_row"})
     row.style.horizontally_stretchable = true
-    local planet = row.add({type = "label", caption = {"", "[space-location=", Util.surface_location(chest.surface), "] ", Util.surface_location(chest.surface)}})
+    local planet = row.add({type = "label", caption = {"", "[space-location=", Util.surface_location(entity.surface), "] ", Util.surface_location(entity.surface)}})
     set_width(planet, widths[1])
     planet.style.font_color = accent_colors.blue
-    local position = row.add({type = "label", caption = Util.gps(chest)})
+    local position = row.add({type = "label", caption = Util.gps(entity)})
     set_width(position, widths[2])
-    local point = chest.get_requester_point()
-    local connected = point and point.logistic_network
+    local connected = destination_network(destination, player)
     local network = row.add({type = "label", caption = connected and {"il-gui.network-connected"} or {"il-gui.network-disconnected"}})
     set_width(network, widths[3])
     network.style.font_color = connected and accent_colors.green or accent_colors.red
   end
-  if #chests == 0 then rows.add({type = "label", caption = {"il-gui.no-chests"}, style = "il_empty_state"}) end
+  if #destinations == 0 then rows.add({type = "label", caption = {"il-gui.no-destinations"}, style = "il_empty_state"}) end
 end
 
 local function build_destinations(parent, player)
-  local chests = chest_list(player)
+  local destinations = destination_list(player)
   local widths = layout(player).destinations
   add_heading(parent, {"il-gui.destinations"}, {"il-gui.destinations-subtitle"})
-  add_metrics(parent, {{#chests, {"il-gui.metric-requester-chests"}, name = "il-metric-destinations", sprite = "utility/reference_point", color = accent_colors.orange}})
+  add_metrics(parent, {{#destinations, {"il-gui.metric-delivery-endpoints"}, name = "il-metric-destinations", sprite = "utility/reference_point", color = accent_colors.orange}})
   add_columns(parent, {{{"il-gui.planet"}, widths[1]}, {{"il-gui.position"}, widths[2]}, {{"il-gui.logistics-network"}, widths[3]}})
   build_destination_rows(add_scroll(parent, "il-destination-list", player), player)
 end
@@ -722,7 +748,7 @@ local function refresh_summaries(frame, player)
   set_metric(frame, "il-metric-fleet-attention", attention)
   set_metric(frame, "il-metric-request-active", #request_list(player, false))
   set_metric(frame, "il-metric-request-attention", #request_list(player, true))
-  set_metric(frame, "il-metric-destinations", #chest_list(player))
+  set_metric(frame, "il-metric-destinations", #destination_list(player))
   set_metric(frame, "il-metric-history", history_count(player))
 end
 
@@ -751,6 +777,13 @@ function Gui.refresh_request_structure(player)
   refresh_summaries(frame, player)
   refresh_request_detail(frame, player)
   Gui.refresh_player(player)
+end
+
+function Gui.refresh_destinations_structure(player)
+  local frame = player.gui.screen[dashboard_name]
+  if not frame or not frame.valid then return end
+  refill(frame, "il-destination-list-rows", build_destination_rows, player)
+  refresh_summaries(frame, player)
 end
 
 function Gui.refresh_structure(player)

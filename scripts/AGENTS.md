@@ -11,7 +11,7 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 ## Local Contracts
 
 - `constants.lua` — Entity names, scan/monitor/ETA timeouts, active statuses, schema version, and history limit
-- `state.lua` — Persistent requests, reservations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
+- `state.lua` — Persistent requests, requester-chest and landing-pad destinations, reservations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
 - `util.lua` — Pure item, signal, surface, route, platform, formatting, sorting, GPS, ghost, and sprite helpers
 - `demands.lua` — Shortage scanning, request lifecycle, priority, approval, suppression, and retirement
 - `router.lua` — Reservation-aware source ranking, ETA/pin-aware platform matching, and dispatch delegation
@@ -30,6 +30,7 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Delivery Fleet and Other Platforms are separate sections sorted by platform name. Requests are ordered by priority, workflow state, then id; selecting a request preserves its detail panel context.
 - Request route cells show `Routing...` until `request.source` resolves; never show the demand origin as a planet.
 - Enrollment clicks update controls in place so dashboard navigation and scroll position remain stable.
+- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once.
 - Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
 - Dispatch order is deterministic: priority, creation tick, then request id.
 - Initialize every persistent field in `State.ensure()`.
@@ -37,8 +38,14 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Sort iteration that affects game state.
 - Keep periodic monitoring single-owned: `Platforms.monitor()` runs from the control scheduler, not from both scan processing and the monitor interval.
 - Keep expensive provider/network queries cached for the current tick when multiple requests share the lookup; subtract live reservations after reading cached stock.
-- Keep normal alert scanning silent; diagnostics must not build log strings inside high-volume loops.
+- Keep construction-network scanning silent; diagnostics must not build log strings inside high-volume loops.
 - Periodic and manual scans use `Demands.start_scan()` plus bounded `Demands.step_scan()` work; do not reintroduce a full scan in `on_tick` or GUI events.
+- Construction demand comes from construction-registered entity ghosts, tile ghosts, and item-request proxies inside each force logistic network's construction cells; never reconstruct item identity or quality from `LuaPlayer.get_alerts()` wrapper prototypes.
+- Deduplicate ghosts/proxies across overlapping construction cells by entity identity, preserve LuaQualityPrototype names, aggregate by force/surface/network/item/quality, and subtract only matching live network inventory.
+- Revalidate cached logistic networks, cells, and owners when each bounded scan slice consumes them; Factorio Lua objects may become invalid between ticks.
+- Construction requests carry their logistic-network id so delivery selects a cargo landing pad in the same network; resolve a pad's network through its surface position because cargo landing pads do not expose `LuaEntity.logistic_network` directly.
+- Quality-aware request icons use `sprite-button.quality`; never assign sprite-only `resize_to_sprite` or `stretch_image_to_widget_size` properties to a sprite button.
+- Requester-chest shortages subtract chest contents and deliveries already targeted to that chest; uncommitted provider inventory must not suppress an interplanetary request.
 - Scan completion must start `Demands.start_process()`; approval and dispatch work advances through `Demands.step_process()` and must not sort/dispatch the entire request table in one tick.
 - Keep monitor, fleet snapshots, and GUI refreshes on separate tick offsets so maintenance work does not stack with scan or dispatch work.
 - Maintenance work is single-lane and resumable: monitor active transfers, fleet snapshots, and open-GUI refreshes must advance through their bounded step APIs; never run two maintenance jobs or rebuild an entire maintenance collection in the tick loop.

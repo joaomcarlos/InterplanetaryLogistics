@@ -6,7 +6,7 @@ Plain Lua test suites validate runtime and data-stage logic without Factorio, us
 
 ## Ownership
 
-- `runtime_spec.lua` — Demand scanning, construction alert normalization, chest allocation, commandeering, ready conditions, ETA/pinning, reservations, and transfer lifecycle
+- `runtime_spec.lua` — Network-bounded construction demand and quality/count aggregation, delivery endpoint discovery, chest allocation, landing-pad network matching, commandeering, ready conditions, ETA/pinning, reservations, and transfer lifecycle
 - `data_stage_spec.lua` — Data-stage prototypes for the chest, item, recipe, shortcut, custom input, and native GUI style system
 - `locale_spec.py` — Verifies every literal `il-gui.*` LocalisedString reference has an English locale definition
 
