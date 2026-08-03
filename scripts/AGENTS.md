@@ -44,6 +44,7 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Deduplicate ghosts/proxies across overlapping construction cells by entity identity, preserve LuaQualityPrototype names, aggregate by force/surface/network/item/quality, and subtract only matching live network inventory.
 - Revalidate cached logistic networks, cells, and owners when each bounded scan slice consumes them; Factorio Lua objects may become invalid between ticks.
 - Construction requests carry their logistic-network id so delivery selects a cargo landing pad in the same network; resolve a pad's network through its surface position because cargo landing pads do not expose `LuaEntity.logistic_network` directly.
+- Space-platform cargo storage is the hub's `defines.inventory.hub_main` inventory; do not use `LuaEntity.get_main_inventory()` for platform hubs.
 - Quality-aware request icons use `sprite-button.quality`; never assign sprite-only `resize_to_sprite` or `stretch_image_to_widget_size` properties to a sprite button.
 - Requester-chest shortages subtract chest contents and deliveries already targeted to that chest; uncommitted provider inventory must not suppress an interplanetary request.
 - Scan completion must start `Demands.start_process()`; approval and dispatch work advances through `Demands.step_process()` and must not sort/dispatch the entire request table in one tick.

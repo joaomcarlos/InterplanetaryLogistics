@@ -727,7 +727,7 @@ end
 local function test_platform_commandeering()
   reset_modules()
   storage = {}
-  defines = {}
+  defines = {inventory = {hub_main = 1}}
   settings = {global = {
     ["il-enable-ready-signal"] = {value = false},
     ["il-ready-signal"] = {value = "signal-green"}
@@ -742,7 +742,10 @@ local function test_platform_commandeering()
   local pad_sections = make_sections()
   local hub = {
     valid = true,
-    get_main_inventory = function() return inventory end,
+    get_inventory = function(inventory_index)
+      assert_equal(inventory_index, 1, "platform routing should read the hub_main inventory")
+      return inventory
+    end,
     get_logistic_sections = function() return hub_sections end
   }
   local pad = {

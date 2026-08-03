@@ -4,6 +4,16 @@ local Util = require("scripts.util")
 
 local Platforms = {}
 
+local function hub_inventory(hub)
+  if not hub or not hub.valid then
+    return nil
+  end
+  if hub.get_inventory and defines and defines.inventory and defines.inventory.hub_main then
+    return hub.get_inventory(defines.inventory.hub_main)
+  end
+  return hub.get_main_inventory and hub.get_main_inventory() or nil
+end
+
 local function setting_value(name, default)
   local setting = settings and settings.global and settings.global[name]
   if setting == nil then return default end
@@ -148,10 +158,7 @@ end
 
 local function platform_capacity(platform, request)
   local hub = platform.hub
-  if not hub or not hub.valid then
-    return 0
-  end
-  local inventory = hub.get_main_inventory()
+  local inventory = hub_inventory(hub)
   if not inventory then
     return 0
   end
@@ -277,7 +284,7 @@ end
 function Platforms.dispatch(request, platform, force)
   local state = State.ensure()
   local hub = platform.hub
-  local inventory = hub and hub.valid and hub.get_main_inventory()
+  local inventory = hub_inventory(hub)
   if not inventory then
     return false, "Platform hub has no cargo inventory"
   end
@@ -420,7 +427,7 @@ local function monitor_transfer(state, request_id)
     if not platform or not platform.hub or not platform.hub.valid then
       Platforms.finish(request, "failed", "Enrolled platform is no longer available")
     else
-      local inventory = platform.hub.get_main_inventory()
+      local inventory = hub_inventory(platform.hub)
       local count = inventory and inventory.get_item_count(Util.item_id(request.item, request.quality)) or 0
       local location = platform.space_location and platform.space_location.name
       if count >= transfer.target_count then
