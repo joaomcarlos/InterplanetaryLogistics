@@ -159,6 +159,62 @@ local function test_scan_scheduler_is_bounded()
   assert_equal(state.process_job, nil, "completed request processing should clear its job")
 end
 
+local function test_scheduler_prioritizes_routing_over_fleet_refresh()
+  reset_modules()
+  local Scheduler = require("scripts.scheduler")
+  local state = {scan = false, process = false, fleet = true}
+  local calls = {}
+  local constants = {
+    monitor_interval = 60,
+    monitor_offset = 5,
+    fleet_refresh_offset = 30,
+    gui_refresh_interval = 120,
+    gui_refresh_offset = 15,
+    scan_work_per_tick = 1,
+    process_work_per_tick = 1,
+    monitor_work_per_tick = 1,
+    fleet_work_per_tick = 1,
+    gui_work_per_tick = 1
+  }
+  local callbacks = {
+    scan_active = function() return state.scan end,
+    process_active = function() return state.process end,
+    start_scan = function() calls.start_scan = (calls.start_scan or 0) + 1; state.scan = true end,
+    step_scan = function()
+      calls.step_scan = (calls.step_scan or 0) + 1
+      return false
+    end,
+    start_process = function() calls.start_process = (calls.start_process or 0) + 1; state.process = true end,
+    step_process = function() calls.step_process = (calls.step_process or 0) + 1; state.process = false end,
+    monitor_active = function() return false end,
+    fleet_refresh_active = function() return state.fleet end,
+    gui_refresh_active = function() return false end,
+    start_monitor = function() calls.start_monitor = (calls.start_monitor or 0) + 1 end,
+    start_fleet_refresh = function() calls.start_fleet_refresh = (calls.start_fleet_refresh or 0) + 1 end,
+    start_gui_refresh = function() calls.start_gui_refresh = (calls.start_gui_refresh or 0) + 1 end,
+    step_monitor = function() calls.step_monitor = (calls.step_monitor or 0) + 1 end,
+    step_fleet_refresh = function() calls.step_fleet_refresh = (calls.step_fleet_refresh or 0) + 1 end,
+    step_gui_refresh = function() calls.step_gui_refresh = (calls.step_gui_refresh or 0) + 1 end
+  }
+
+  assert_equal(Scheduler.step(120, 120, constants, callbacks), "routing", "scan boundary should prioritize routing")
+  assert_equal(calls.start_scan, 1, "scan should start even while fleet refresh is active")
+  assert_equal(calls.step_scan, 1, "scan should advance on its starting tick")
+  assert_equal(calls.step_fleet_refresh, nil, "fleet refresh must yield to routing")
+
+  callbacks.step_scan = function()
+    calls.step_scan = calls.step_scan + 1
+    state.scan = false
+    return true
+  end
+  assert_equal(Scheduler.step(121, 120, constants, callbacks), "routing", "scan completion should remain on routing lane")
+  assert_equal(calls.start_process, 1, "scan completion should start request processing")
+  assert_equal(calls.step_fleet_refresh, nil, "fleet refresh must remain paused during processing")
+
+  assert_equal(Scheduler.step(122, 120, constants, callbacks), "routing", "request processing should keep routing priority")
+  assert_equal(calls.step_process, 1, "request processing should advance")
+end
+
 local function test_construction_alert_surface_uses_target()
   reset_modules()
   storage = {}
@@ -730,7 +786,8 @@ local function test_platform_commandeering()
   defines = {inventory = {hub_main = 1}}
   settings = {global = {
     ["il-enable-ready-signal"] = {value = false},
-    ["il-ready-signal"] = {value = "signal-green"}
+    ["il-ready-signal"] = {value = "signal-green"},
+    ["il-source-reserve"] = {value = 0}
   }}
 
   local cargo_count = 10
@@ -756,6 +813,18 @@ local function test_platform_commandeering()
     get_logistic_sections = function() return pad_sections end
   }
   local destination_network = {valid = true, network_id = 7}
+  local source_network = {
+    valid = true,
+    network_id = 8,
+    get_item_count = function() return 100 end
+  }
+  local source_surface = {
+    valid = true,
+    index = 2,
+    name = "fulgora",
+    planet = {name = "fulgora"},
+    find_entities_filtered = function() return {{valid = true, position = {x = 0, y = 0}}} end
+  }
   local destination_surface = {
     valid = true,
     index = 1,
@@ -776,11 +845,19 @@ local function test_platform_commandeering()
       }
     }
   }
-  local force = {valid = true, index = 1, platforms = {platform}}
+  local force = {
+    valid = true,
+    index = 1,
+    platforms = {platform},
+    find_logistic_network_by_position = function(_, surface)
+      return surface.index == 2 and source_network or destination_network
+    end
+  }
   game = {
     tick = 100,
     forces = {[1] = force},
-    get_surface = function() return destination_surface end,
+    surfaces = {[1] = destination_surface, [2] = source_surface},
+    get_surface = function(index) return ({[1] = destination_surface, [2] = source_surface})[index] end,
     get_entity_by_unit_number = function(unit_number) return unit_number == 50 and pad or nil end
   }
 
@@ -924,10 +1001,11 @@ local function test_router_rank_and_dispatch()
     network_id = 1,
     get_item_count = function() return 100 end
   }
+  local fulgora_provider_stock = 200
   local fulgora_network = {
     valid = true,
     network_id = 2,
-    get_item_count = function() return 200 end
+    get_item_count = function() return fulgora_provider_stock end
   }
 
   local nauvis_silo = {valid = true, position = {x = 0, y = 0}}
@@ -935,6 +1013,7 @@ local function test_router_rank_and_dispatch()
 
   local cargo_count = 0
   local provider_queries = 0
+  local pad_available = true
   local inventory = {
     get_item_count = function() return cargo_count end,
     get_insertable_count = function() return 1000 end
@@ -957,7 +1036,7 @@ local function test_router_rank_and_dispatch()
   local nauvis_surface = {
     valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"},
     find_entities_filtered = function(filter)
-      if filter.type == "cargo-landing-pad" then return {pad} end
+      if filter.type == "cargo-landing-pad" then return pad_available and {pad} or {} end
       return {nauvis_silo}
     end
   }
@@ -1031,7 +1110,7 @@ local function test_router_rank_and_dispatch()
 
   local ok = Router.try_dispatch(request)
   assert(ok, "dispatch should succeed")
-  assert_equal(provider_queries, 1, "same-tick source ranking should reuse provider queries")
+  assert_equal(provider_queries, 2, "dispatch should perform one fresh source-stock recheck after the cached ranking")
   assert_equal(request.status, "loading", "request should be loading after dispatch")
   assert_equal(request.source, "fulgora", "source should be set to fulgora")
   assert_equal(#platform.schedule.records, 4, "two temporary records should be appended")
@@ -1050,6 +1129,27 @@ local function test_router_rank_and_dispatch()
   assert(metrics, "source metrics should be recorded for fulgora")
   assert_equal(metrics.successes, 1, "successful transfer should increment successes")
   assert_equal(metrics.failures, 0, "no failures should be recorded")
+
+  local source_missing_request = {
+    id = 5,
+    key = "test-five",
+    status = "approved",
+    force_index = 1,
+    destination_surface_index = 1,
+    logistic_network_id = 7,
+    destination = "nauvis",
+    source = "fulgora",
+    item = "holmium-plate",
+    quality = "normal",
+    amount = 50,
+    origin = "chest"
+  }
+  fulgora_provider_stock = 0
+  local source_missing, source_missing_reason = Platforms.dispatch(source_missing_request, platform, force)
+  assert_equal(source_missing, false, "dispatch must recheck source provider stock")
+  assert_equal(source_missing_reason, "Source no longer has enough provider stock for 50 items", "dispatch should explain a vanished source")
+  assert_equal(source_missing_request.status, "approved", "missing source stock must not create a transfer")
+  fulgora_provider_stock = 200
 
   local second = {
     id = 2,
@@ -1088,6 +1188,28 @@ local function test_router_rank_and_dispatch()
   state.request_by_key["test-three"] = 3
   local wrong_status = Router.try_dispatch(third)
   assert_equal(wrong_status, false, "try_dispatch should reject non-approved requests")
+
+  local fourth = {
+    id = 4,
+    key = "test-four",
+    status = "approved",
+    force_index = 1,
+    destination_surface_index = 1,
+    logistic_network_id = 7,
+    destination = "nauvis",
+    item = "holmium-plate",
+    quality = "normal",
+    amount = 50,
+    origin = "chest"
+  }
+  state.requests[4] = fourth
+  state.request_by_key["test-four"] = 4
+  pad_available = false
+  local missing_pad = Router.try_dispatch(fourth)
+  assert_equal(missing_pad, false, "dispatch should fail when the destination pad is unavailable")
+  assert_equal(fourth.source, nil, "failed dispatch must clear its source candidate")
+  assert_equal(fourth.source_surface_index, nil, "failed dispatch must clear its source surface")
+  assert_equal(fourth.last_reason, "Destination has no cargo landing pad", "dispatch failure should preserve its concrete reason")
 end
 
 local function test_construction_network_scan_matches_game_alerts()
@@ -1371,6 +1493,7 @@ test_bounded_scan_skips_invalidated_logistic_networks()
 test_destination_registry_includes_landing_pads()
 test_chest_outstanding_demands()
 test_scan_scheduler_is_bounded()
+test_scheduler_prioritizes_routing_over_fleet_refresh()
 test_platform_commandeering()
 test_router_rank_and_dispatch()
 test_fleet_preferences_eta_and_reservations()

@@ -4,6 +4,7 @@ local Demands = require("scripts.demands")
 local Platforms = require("scripts.platforms")
 local Gui = require("scripts.gui")
 local Util = require("scripts.util")
+local Scheduler = require("scripts.scheduler")
 
 local function destination_kind(entity)
   if not entity or not entity.valid then return nil end
@@ -205,44 +206,23 @@ script.on_event(defines.events.on_gui_closed, function(event)
 end)
 
 script.on_event(defines.events.on_tick, function(event)
-  local maintenance_tick = false
-  local maintenance_active = Platforms.monitor_active()
-    or Platforms.fleet_refresh_active()
-    or Gui.refresh_active()
-  if event.tick % Constants.monitor_interval == Constants.monitor_offset then
-    if not maintenance_active then Platforms.start_monitor() end
-    maintenance_tick = true
-  elseif event.tick % Constants.monitor_interval == Constants.fleet_refresh_offset then
-    if not maintenance_active then Platforms.start_fleet_refresh() end
-    maintenance_tick = true
-  elseif event.tick % Constants.gui_refresh_interval == Constants.gui_refresh_offset then
-    if not maintenance_active then Gui.start_refresh() end
-    maintenance_tick = true
-  end
-
-  if Platforms.monitor_active() then
-    Platforms.step_monitor(Constants.monitor_work_per_tick)
-    maintenance_tick = true
-  elseif Platforms.fleet_refresh_active() then
-    Platforms.step_fleet_refresh(Constants.fleet_work_per_tick)
-    maintenance_tick = true
-  elseif Gui.refresh_active() then
-    Gui.step_refresh(Constants.gui_work_per_tick)
-    maintenance_tick = true
-  end
-
-  local interval = settings.global["il-scan-interval"].value
-  if not maintenance_tick and event.tick % interval == 0 then
-    Demands.start_scan()
-  end
-  local scan_finished = false
-  if not maintenance_tick and Demands.scan_active() then
-    scan_finished = Demands.step_scan(Constants.scan_work_per_tick)
-    if scan_finished then Demands.start_process() end
-  end
-  if not maintenance_tick and not scan_finished and Demands.process_active() then
-    Demands.step_process(Constants.process_work_per_tick)
-  end
+  Scheduler.step(event.tick, settings.global["il-scan-interval"].value, Constants, {
+    scan_active = Demands.scan_active,
+    process_active = Demands.process_active,
+    start_scan = Demands.start_scan,
+    step_scan = Demands.step_scan,
+    start_process = Demands.start_process,
+    step_process = Demands.step_process,
+    monitor_active = Platforms.monitor_active,
+    fleet_refresh_active = Platforms.fleet_refresh_active,
+    gui_refresh_active = Gui.refresh_active,
+    start_monitor = Platforms.start_monitor,
+    start_fleet_refresh = Platforms.start_fleet_refresh,
+    start_gui_refresh = Gui.start_refresh,
+    step_monitor = Platforms.step_monitor,
+    step_fleet_refresh = Platforms.step_fleet_refresh,
+    step_gui_refresh = Gui.step_refresh
+  })
 end)
 
 remote.add_interface("interplanetary_logistics", {

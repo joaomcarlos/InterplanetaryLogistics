@@ -16,7 +16,10 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - `demands.lua` — Shortage scanning, request lifecycle, priority, approval, suppression, and retirement
 - `router.lua` — Reservation-aware source ranking, ETA/pin-aware platform matching, and dispatch delegation
 - `platforms.lua` — Enrollment, ETA/status/stuck monitoring, route pinning, ready signals, temporary schedules, request sections, return cargo, and transfer lifecycle
+- `scheduler.lua` — Single-lane routing and maintenance scheduling with routing priority at scan boundaries
 - `gui.lua` — High-volume dashboard with Fleet Monitor first; native navigation views for Fleet, Requests, Destinations, and History; Requests includes a fixed detail panel; one scroll owner per visible list
+
+- `source_stock.lua` — Fresh and cached provider-stock lookup for rocket-silo logistic networks
 
 ## Work Guidance
 
@@ -50,6 +53,9 @@ Each module owns a single responsibility. Cross-module calls flow downward: `con
 - Scan completion must start `Demands.start_process()`; approval and dispatch work advances through `Demands.step_process()` and must not sort/dispatch the entire request table in one tick.
 - Keep monitor, fleet snapshots, and GUI refreshes on separate tick offsets so maintenance work does not stack with scan or dispatch work.
 - Maintenance work is single-lane and resumable: monitor active transfers, fleet snapshots, and open-GUI refreshes must advance through their bounded step APIs; never run two maintenance jobs or rebuild an entire maintenance collection in the tick loop.
+- Routing work has priority at scan boundaries and while a scan or process job is active; maintenance jobs yield rather than starving demand discovery or dispatch.
+
+- Recheck source provider stock immediately before creating a platform transfer; the ranking lookup may be stale by dispatch time.
 
 ## Verification
 

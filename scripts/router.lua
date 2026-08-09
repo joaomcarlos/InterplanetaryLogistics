@@ -1,54 +1,18 @@
 local State = require("scripts.state")
-local Util = require("scripts.util")
 local Platforms = require("scripts.platforms")
+local SourceStock = require("scripts.source_stock")
 
 local Router = {}
 
--- A scan can approve several requests in the same tick. Provider inventories
--- do not change between those lookups except for our own reservations, so keep
--- the expensive surface/silo/network query for the duration of that tick.
-local provider_cache_tick
-local provider_cache = {}
-local planet_surface_cache_tick
-local planet_surface_cache
-
-local function planet_surfaces()
-  if planet_surface_cache_tick == game.tick then
-    return planet_surface_cache
-  end
-  local surfaces = {}
-  for _, surface in pairs(game.surfaces) do
-    if surface.valid and surface.planet then
-      surfaces[#surfaces + 1] = surface
-    end
-  end
-  planet_surface_cache_tick = game.tick
-  planet_surface_cache = surfaces
-  return surfaces
-end
-
-local function provider_count(surface, force, request)
-  local cache_key = table.concat({force.index, surface.index, request.item, request.quality or "normal"}, "|")
-  if provider_cache_tick ~= game.tick then
-    provider_cache_tick = game.tick
-    provider_cache = {}
-  end
-  local cached = provider_cache[cache_key]
-  if cached == nil then
-    local total = 0
-    local networks = {}
-    for _, silo in pairs(surface.find_entities_filtered({type = "rocket-silo", force = force})) do
-      local network = force.find_logistic_network_by_position(silo.position, surface)
-      if network and network.valid and not networks[network.network_id] then
-        networks[network.network_id] = true
-        total = total + network.get_item_count(Util.item_id(request.item, request.quality), "providers")
-      end
-    end
-    cached = total
-    provider_cache[cache_key] = total
-  end
-  local location = Util.surface_location(surface)
-  return math.max(0, cached - State.reserved_count(location, request.item, request.quality, request.id))
+local function clear_dispatch_candidate(request)
+  request.source = nil
+  request.source_surface_index = nil
+  request.source_available = nil
+  request.source_score = nil
+  request.platform_index = nil
+  request.platform_name = nil
+  request.dispatched_tick = nil
+  request.eta_tick = nil
 end
 
 local function reliability_score(location, available, needed)
@@ -60,21 +24,9 @@ local function reliability_score(location, available, needed)
 end
 
 function Router.rank_sources(request, force)
-  local reserve = settings.global["il-source-reserve"].value
-  local sources = {}
-  for _, surface in pairs(planet_surfaces()) do
-    if surface.index ~= request.destination_surface_index then
-      local available = math.max(0, provider_count(surface, force, request) - reserve)
-      if available >= request.amount then
-        local location = Util.surface_location(surface)
-        sources[#sources + 1] = {
-          surface_index = surface.index,
-          location = location,
-          available = available,
-          score = reliability_score(location, available, request.amount)
-        }
-      end
-    end
+  local sources = SourceStock.rank(request, force)
+  for _, source in ipairs(sources) do
+    source.score = reliability_score(source.location, source.available, request.amount)
   end
   table.sort(sources, function(a, b)
     if a.score == b.score then
@@ -92,6 +44,7 @@ function Router.try_dispatch(request)
   if request.status ~= "approved" then
     return false
   end
+  clear_dispatch_candidate(request)
   local force = game.forces[request.force_index]
   if not force then
     request.last_reason = "Force no longer exists"
@@ -103,6 +56,7 @@ function Router.try_dispatch(request)
     return false
   end
   local match_reason
+  local dispatch_reason
   for _, source in ipairs(sources) do
     local platform, reason = Platforms.find_matching(request, force, source.location, request.destination)
     if platform then
@@ -116,12 +70,13 @@ function Router.try_dispatch(request)
         return true
       end
       State.release_reservation(request.id)
-      request.last_reason = reason
+      clear_dispatch_candidate(request)
+      dispatch_reason = dispatch_reason or reason
     elseif not match_reason then
       match_reason = reason
     end
   end
-  request.last_reason = match_reason or request.last_reason or "No enrolled platform is currently eligible"
+  request.last_reason = dispatch_reason or match_reason or request.last_reason or "No enrolled platform is currently eligible"
   return false
 end
 

@@ -1,6 +1,7 @@
 local Constants = require("scripts.constants")
 local State = require("scripts.state")
 local Util = require("scripts.util")
+local SourceStock = require("scripts.source_stock")
 
 local Platforms = {}
 
@@ -287,6 +288,10 @@ function Platforms.dispatch(request, platform, force)
   local inventory = hub_inventory(hub)
   if not inventory then
     return false, "Platform hub has no cargo inventory"
+  end
+  local source_available = SourceStock.available(request, force, request.source, true)
+  if source_available < request.amount then
+    return false, "Source no longer has enough provider stock for " .. request.amount .. " items"
   end
   local pad = find_destination_pad(request, force)
   if not pad then
