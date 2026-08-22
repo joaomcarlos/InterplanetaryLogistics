@@ -386,7 +386,7 @@ local function build_shipments(parent, player)
   add_heading(parent, {"il-gui.shipments"}, {"il-gui.shipments-subtitle"})
   local total, loading, delivering, finished = shipment_counts(player)
   add_metrics(parent, {
-    {total, {"il-gui.metric-shipments-total"}, name = "il-metric-shipments-total", sprite = "utility/cargo_plane", color = accent_colors.blue},
+    {total, {"il-gui.metric-shipments-total"}, name = "il-metric-shipments-total", sprite = "utility/starmap_platform_stopped", color = accent_colors.blue},
     {loading, {"il-gui.metric-shipments-loading"}, name = "il-metric-shipments-loading", sprite = "utility/play", color = accent_colors.blue},
     {delivering, {"il-gui.metric-shipments-delivering"}, name = "il-metric-shipments-delivering", sprite = "utility/check_mark_green", color = accent_colors.green},
     {finished, {"il-gui.metric-shipments-finished"}, name = "il-metric-shipments-finished", sprite = "utility/check_mark", color = accent_colors.muted}
@@ -771,7 +771,7 @@ local function add_navigation(parent, player, selected)
   local entries = {
     {"fleet", {"il-gui.fleet-monitor"}, "utility/starmap_platform_stacked"},
     {"requests", {"il-gui.requests"}, "utility/list_view"},
-    {"shipments", {"il-gui.shipments"}, "utility/cargo_plane"},
+    {"shipments", {"il-gui.shipments"}, "utility/starmap_platform_stopped"},
     {"destinations", {"il-gui.destinations"}, "utility/reference_point"},
     {"history", {"il-gui.history"}, "utility/clock"}
   }
