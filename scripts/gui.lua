@@ -5,8 +5,8 @@ local Platforms = require("scripts.platforms")
 
 local Gui = {}
 local dashboard_name = Constants.dashboard_name
-local view_names = {fleet = "il-content-fleet", requests = "il-content-requests", destinations = "il-content-destinations", history = "il-content-history"}
-local view_order = {"fleet", "requests", "destinations", "history"}
+local view_names = {fleet = "il-content-fleet", requests = "il-content-requests", shipments = "il-content-shipments", destinations = "il-content-destinations", history = "il-content-history"}
+local view_order = {"fleet", "requests", "shipments", "destinations", "history"}
 
 local status_colors = {
   queued = {r = 1, g = 0.72, b = 0.20}, approved = {r = 0.30, g = 0.72, b = 1},
@@ -26,6 +26,7 @@ local accent_colors = {
 
 local priority_names = {[-1] = {"il-gui.priority-low"}, [0] = {"il-gui.priority-normal"}, [1] = {"il-gui.priority-high"}}
 local request_order = {queued = 1, approved = 2, loading = 3, delivering = 4, denied = 5}
+local shipment_order = {planned = 1, loading = 2, delivering = 3, completed = 4, failed = 5, cancelled = 6}
 
 local function layout(player)
   local resolution = player.display_resolution or {width = 1920, height = 1080}
@@ -48,12 +49,14 @@ local function layout(player)
     return widths
   end
   local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
-  local request_widths = compact and {135, 105, 75, 0, 0, 108} or {190, 160, 90, 115, 70, 160}
-  local destination_widths = compact and {200, 280, 220} or {270, 420, 360}
+  local request_widths = compact and {130, 85, 60, 60, 65, 55, 80} or {190, 130, 80, 80, 90, 75, 100}
+  local destination_widths = compact and {200, 280} or {270, 420}
   local history_widths = compact and {180, 170, 90, 250} or {250, 250, 110, 430}
+  local shipment_widths = compact and {120, 44, 150, 75, 65, 60, 80} or {170, 44, 280, 100, 90, 90, 100}
   expand_last(fleet_widths, view_width - table_insets)
   expand_last(destination_widths, view_width - table_insets)
   expand_last(history_widths, view_width - table_insets)
+  expand_last(shipment_widths, view_width - table_insets)
   expand_last(request_widths, request_list_width - table_insets)
   return {
     frame_width = frame_width,
@@ -66,6 +69,7 @@ local function layout(player)
     list_height = math.max(180, frame_height - 235),
     fleet = fleet_widths,
     requests = request_widths,
+    shipments = shipment_widths,
     destinations = destination_widths,
     history = history_widths
   }
@@ -127,8 +131,8 @@ local function add_section_label(parent, caption)
   flow.add({type = "label", caption = caption, style = "il_section_title"})
 end
 
-local function add_columns(parent, columns)
-  local header = parent.add({type = "frame", direction = "horizontal", style = "il_table_header_frame"})
+local function add_columns(parent, columns, header_name)
+  local header = parent.add({type = "frame", name = header_name, direction = "horizontal", style = "il_table_header_frame"})
   for _, column in ipairs(columns) do
     local label = header.add({type = "label", caption = column[1], style = "il_column_header"})
     set_width(label, column[2])
@@ -298,6 +302,104 @@ local function build_fleet(parent, player)
   build_platform_rows(other, player, false)
 end
 
+local function shipment_list(player)
+  local shipments = Util.sorted_values(State.ensure().shipments, function(shipment)
+    return shipment.force_index == player.force.index
+  end)
+  table.sort(shipments, function(a, b)
+    if (shipment_order[a.status] or 99) ~= (shipment_order[b.status] or 99) then
+      return (shipment_order[a.status] or 99) < (shipment_order[b.status] or 99)
+    end
+    return a.id < b.id
+  end)
+  return shipments
+end
+
+local function shipment_counts(player)
+  local state = State.ensure()
+  local total, loading, delivering, finished = 0, 0, 0, 0
+  for _, shipment in pairs(state.shipments or {}) do
+    if shipment.force_index == player.force.index then
+      total = total + 1
+      if shipment.status == "loading" then loading = loading + 1
+      elseif shipment.status == "delivering" then delivering = delivering + 1
+      elseif shipment.status == "completed" or shipment.status == "failed" then finished = finished + 1 end
+    end
+  end
+  return total, loading, delivering, finished
+end
+
+local function shipment_route(shipment)
+  local parts = {}
+  for _, leg in ipairs(shipment.pickup_legs or {}) do
+    parts[#parts + 1] = leg.source or "?"
+  end
+  parts[#parts + 1] = shipment.destination or "?"
+  return table.concat(parts, " → ")
+end
+
+local function build_shipment_rows(parent, player)
+  local shipments = shipment_list(player)
+  local widths = layout(player).shipments
+  for _, shipment in ipairs(shipments) do
+    local row = parent.add({type = "frame", name = "il-shipment-row-" .. shipment.id, direction = "horizontal", style = "il_list_row"})
+    row.style.horizontally_stretchable = true
+    local ship = row.add({type = "label", name = "il-shipment-ship-" .. shipment.id, caption = "[font=default-semibold]" .. (shipment.platform_name or "") .. "[/font]"})
+    set_width(ship, widths[1])
+    ship.style.single_line = true
+    ship.style.font_color = accent_colors.blue
+    local item = row.add({type = "sprite-button", name = "il-shipment-item-" .. shipment.id, sprite = "item/" .. (shipment.item or ""), quality = shipment.quality or "normal", style = "slot_button"})
+    item.style.size = 32
+    set_width(item, widths[2])
+    local route = row.add({type = "label", name = "il-shipment-route-" .. shipment.id, caption = shipment_route(shipment)})
+    set_width(route, widths[3])
+    route.style.single_line = true
+    local status = row.add({type = "label", name = "il-shipment-status-" .. shipment.id, caption = {"il-gui.shipment-status-" .. shipment.status}})
+    set_width(status, widths[4])
+    status.style.font_color = status_colors[shipment.status] or status_colors.idle
+    local amount = row.add({type = "label", name = "il-shipment-amount-" .. shipment.id, caption = {"", tostring(shipment.allocated_amount or 0), " / ", tostring(shipment.amount or 0)}})
+    set_width(amount, widths[5])
+    local demand = row.add({type = "label", name = "il-shipment-demand-" .. shipment.id, caption = tostring(shipment.demand_id or "?")})
+    set_width(demand, widths[6])
+    local actions = row.add({type = "flow", direction = "horizontal"})
+    set_width(actions, widths[7])
+    actions.style.horizontal_spacing = 4
+    add_icon_button(actions, {
+      name = "il-shipment-demand-link-" .. shipment.id, sprite = "utility/search",
+      tooltip = {"il-gui.view-demand"},
+      tags = {il_action = "demand-link", demand_id = shipment.demand_id}
+    })
+    if shipment.status == "loading" or shipment.status == "delivering" then
+      add_icon_button(actions, {
+        name = "il-cancel-shipment-" .. shipment.id, sprite = "utility/trash",
+        tooltip = {"il-gui.cancel-shipment"}, style = "il_square_tool_button_red",
+        tags = {il_action = "cancel-shipment", shipment_id = shipment.id}
+      })
+    end
+  end
+  if #shipments == 0 then
+    parent.add({type = "label", caption = {"il-gui.no-shipments"}, style = "il_empty_state"})
+  end
+end
+
+local function build_shipments(parent, player)
+  add_heading(parent, {"il-gui.shipments"}, {"il-gui.shipments-subtitle"})
+  local total, loading, delivering, finished = shipment_counts(player)
+  add_metrics(parent, {
+    {total, {"il-gui.metric-shipments-total"}, name = "il-metric-shipments-total", sprite = "utility/cargo_plane", color = accent_colors.blue},
+    {loading, {"il-gui.metric-shipments-loading"}, name = "il-metric-shipments-loading", sprite = "utility/play", color = accent_colors.blue},
+    {delivering, {"il-gui.metric-shipments-delivering"}, name = "il-metric-shipments-delivering", sprite = "utility/check_mark_green", color = accent_colors.green},
+    {finished, {"il-gui.metric-shipments-finished"}, name = "il-metric-shipments-finished", sprite = "utility/check_mark", color = accent_colors.muted}
+  })
+  local widths = layout(player).shipments
+  add_columns(parent, {
+    {{"il-gui.ship"}, widths[1]}, {{"il-gui.item"}, widths[2]}, {{"il-gui.route"}, widths[3]},
+    {{"il-gui.status"}, widths[4]}, {{"il-gui.shipment-amount"}, widths[5]},
+    {{"il-gui.demand-link"}, widths[6]}, {{"il-gui.actions"}, widths[7]}
+  }, "il-shipment-header")
+  build_shipment_rows(add_scroll(parent, "il-shipment-list", player), player)
+end
+
 local function request_list(player, attention)
   local requests = Util.sorted_values(State.ensure().requests, function(request)
     if request.force_index ~= player.force.index then return false end
@@ -315,10 +417,18 @@ local function request_list(player, attention)
   return requests
 end
 
+local function demand_shipment_count(demand_id)
+  local state = State.ensure()
+  local count = 0
+  for _ in pairs(state.shipments_by_demand[demand_id] or {}) do count = count + 1 end
+  return count
+end
+
 local function build_request_rows(parent, player, attention)
   local requests = request_list(player, attention)
   local widths = layout(player).requests
-  local selected_id = (State.ensure().gui_tabs[player.index] or {}).selected_request_id
+  local state = State.ensure()
+  local selected_id = (state.gui_tabs[player.index] or {}).selected_request_id
   for _, request in ipairs(requests) do
     local row = parent.add({type = "frame", direction = "horizontal", style = attention and "il_list_row_attention" or "il_list_row"})
     row.style.horizontally_stretchable = true
@@ -329,24 +439,21 @@ local function build_request_rows(parent, player, attention)
     set_width(item, widths[1])
     item.style.single_line = true
     if request.id == selected_id then item.style.font_color = accent_colors.orange end
-    local route = row.add({type = "label", name = "il-request-route-" .. request.id, caption = {"", request.source or {"il-gui.routing"}, " → ", request.destination or "?"}})
-    set_width(route, widths[2])
+    local destination = row.add({type = "label", name = "il-request-destination-" .. request.id, caption = request.destination or "?"})
+    set_width(destination, widths[2])
+    destination.style.single_line = true
+    local shortage = row.add({type = "label", name = "il-request-shortage-" .. request.id, caption = tostring(request.observed_shortage or request.amount or 0)})
+    set_width(shortage, widths[3])
+    local active = row.add({type = "label", name = "il-request-active-" .. request.id, caption = tostring(request.active_shipment_amount or 0)})
+    set_width(active, widths[4])
+    if (request.active_shipment_amount or 0) > 0 then active.style.font_color = accent_colors.blue end
     local status = row.add({type = "label", name = "il-request-status-" .. request.id, caption = {"il-gui.request-status-" .. request.status}, tooltip = request.last_reason})
-    set_width(status, widths[3])
+    set_width(status, widths[5])
     status.style.font_color = status_colors[request.status] or status_colors.idle
-    if widths[4] > 0 then
-      local ship = row.add({type = "label", name = "il-request-ship-" .. request.id, caption = request.platform_name or "—"})
-      set_width(ship, widths[4])
-      if request.platform_name then ship.style.font_color = accent_colors.blue end
-    end
-    if widths[5] > 0 then
-      local priority = row.add({type = "label", name = "il-request-priority-" .. request.id, caption = priority_names[request.priority or 0]})
-      set_width(priority, widths[5])
-      if (request.priority or 0) > 0 then priority.style.font_color = accent_colors.orange
-      elseif (request.priority or 0) < 0 then priority.style.font_color = accent_colors.muted end
-    end
+    local shipments_count = row.add({type = "label", name = "il-request-shipments-" .. request.id, caption = tostring(demand_shipment_count(request.id))})
+    set_width(shipments_count, widths[6])
     local actions = row.add({type = "flow", direction = "horizontal"})
-    set_width(actions, widths[6])
+    set_width(actions, widths[7])
     actions.style.horizontal_spacing = 3
     if request.status == "queued" then
       add_icon_button(actions, {name = "il-approve-" .. request.id, sprite = "utility/check_mark", tooltip = {"il-gui.approve"}, style = "il_square_tool_button_green"})
@@ -442,18 +549,41 @@ local function build_request_detail(parent, player)
   local color = status_colors[request.status] or status_colors.idle
   add_detail_line(parent, {"il-gui.detail-status"}, {"il-gui.request-status-" .. request.status}, color)
   add_detail_line(parent, {"il-gui.detail-destination"}, request.destination)
-  add_detail_line(parent, {"il-gui.detail-platform"}, request.platform_name)
+  add_detail_line(parent, {"il-gui.observed-shortage"}, tostring(request.observed_shortage or request.amount or 0))
+  add_detail_line(parent, {"il-gui.active-shipment-amount"}, tostring(request.active_shipment_amount or 0))
+  add_detail_line(parent, {"il-gui.unplanned-amount"}, tostring(request.unplanned_amount or 0))
+
+  add_section_label(parent, {"il-gui.demand-shipments"})
+  local shipments_section = parent.add({type = "frame", name = "il-demand-shipments-section", direction = "vertical", style = "il_detail_section_frame"})
+  shipments_section.style.horizontally_stretchable = true
+  local state = State.ensure()
+  local child_ids = {}
+  for shipment_id in pairs(state.shipments_by_demand[request.id] or {}) do
+    child_ids[#child_ids + 1] = shipment_id
+  end
+  table.sort(child_ids)
+  if #child_ids == 0 then
+    shipments_section.add({type = "label", caption = {"il-gui.no-shipments"}, style = "il_empty_state"})
+  else
+    for _, shipment_id in ipairs(child_ids) do
+      local shipment = state.shipments[shipment_id]
+      if shipment then
+        local entry = shipments_section.add({type = "flow", name = "il-demand-shipment-entry-" .. shipment_id, direction = "horizontal"})
+        entry.style.horizontally_stretchable = true
+        entry.style.bottom_margin = 3
+        local name_label = entry.add({type = "label", caption = shipment.platform_name or "?", style = "il_detail_value"})
+        name_label.style.font_color = accent_colors.blue
+        local spacer = entry.add({type = "empty-widget"})
+        spacer.style.horizontally_stretchable = true
+        local status_label = entry.add({type = "label", caption = {"il-gui.shipment-status-" .. shipment.status}, style = "il_muted_label"})
+        status_label.style.font_color = status_colors[shipment.status] or status_colors.idle
+      end
+    end
+  end
 
   add_section_label(parent, {"il-gui.why-delayed"})
   local reason = parent.add({type = "label", caption = request.last_reason or {"il-gui.no-delay"}, style = "il_detail_body"})
   reason.style.maximal_width = layout(player).detail_width - 24
-
-  add_section_label(parent, {"il-gui.route-overview"})
-  local route = parent.add({type = "frame", direction = "vertical", style = "il_detail_section_frame"})
-  route.style.horizontally_stretchable = true
-  add_detail_line(route, {"il-gui.detail-source"}, request.source or {"il-gui.routing"})
-  add_detail_line(route, {"il-gui.detail-route"}, {"", request.source or "?", " -> ", request.destination or "?"})
-  add_detail_line(route, {"il-gui.detail-eta"}, request.eta_tick and Util.format_ticks(math.max(0, request.eta_tick - game.tick)) or "-")
 
   add_section_label(parent, {"il-gui.timeline"})
   add_timeline(parent, request)
@@ -488,13 +618,12 @@ local function build_requests(parent, player)
   list.style.width = sizes.request_list_width
   list.style.horizontally_stretchable = true
   local widths = sizes.requests
-  local columns = {
-    {{"il-gui.item"}, widths[1]}, {{"il-gui.route"}, widths[2]}, {{"il-gui.status"}, widths[3]}
-  }
-  if widths[4] > 0 then columns[#columns + 1] = {{"il-gui.assigned-ship"}, widths[4]} end
-  if widths[5] > 0 then columns[#columns + 1] = {{"il-gui.priority"}, widths[5]} end
-  columns[#columns + 1] = {{"il-gui.actions"}, widths[6]}
-  add_columns(list, columns)
+  add_columns(list, {
+    {{"il-gui.item"}, widths[1]}, {{"il-gui.destination"}, widths[2]},
+    {{"il-gui.observed-shortage"}, widths[3]}, {{"il-gui.active-shipment-amount"}, widths[4]},
+    {{"il-gui.status"}, widths[5]}, {{"il-gui.demand-shipments"}, widths[6]},
+    {{"il-gui.actions"}, widths[7]}
+  })
   local scroll = list.add({type = "scroll-pane", name = "il-request-list", direction = "vertical", style = "il_scroll_pane"})
   scroll.style.horizontally_stretchable = true
   scroll.style.minimal_height = sizes.list_height
@@ -523,54 +652,46 @@ local function build_requests(parent, player)
 end
 
 local function destination_list(player)
-  local list = {}
+  local pads = {}
   local state = State.ensure_destinations()
-  local function add(unit_number, kind)
+  for unit_number in pairs(state.landing_pads) do
     local entity = game.get_entity_by_unit_number(unit_number)
     if entity and entity.valid and entity.force and entity.force.index == player.force.index then
-      list[#list + 1] = {entity = entity, kind = kind}
+      pads[#pads + 1] = entity
     end
   end
-  for unit_number in pairs(state.chests) do add(unit_number, "chest") end
-  for unit_number in pairs(state.landing_pads) do add(unit_number, "landing-pad") end
-  table.sort(list, function(a, b)
-    local ap = Util.surface_location(a.entity.surface)
-    local bp = Util.surface_location(b.entity.surface)
-    if ap == bp then
-      if a.kind == b.kind then return a.entity.unit_number < b.entity.unit_number end
-      return a.kind < b.kind
-    end
-    return ap < bp
-  end)
-  return list
+  return Util.group_destinations_by_planet(pads)
 end
 
-local function destination_network(destination, player)
-  local entity = destination.entity
-  if destination.kind == "chest" then
-    local point = entity.get_requester_point()
-    return point and point.logistic_network
+local function destination_pad_count(destinations)
+  local total = 0
+  for _, destination in ipairs(destinations) do
+    total = total + #destination.pads
   end
-  return entity.logistic_network
-    or entity.surface.find_logistic_network_by_position(entity.position, player.force)
+  return total
 end
 
 local function build_destination_rows(rows, player)
   local destinations = destination_list(player)
   local widths = layout(player).destinations
   for _, destination in ipairs(destinations) do
-    local entity = destination.entity
     local row = rows.add({type = "frame", direction = "horizontal", style = "il_list_row"})
     row.style.horizontally_stretchable = true
-    local planet = row.add({type = "label", caption = {"", "[space-location=", Util.surface_location(entity.surface), "] ", Util.surface_location(entity.surface)}})
+    local planet = row.add({type = "label", caption = {"", "[space-location=", destination.planet, "] ", destination.planet}})
     set_width(planet, widths[1])
     planet.style.font_color = accent_colors.blue
-    local position = row.add({type = "label", caption = Util.gps(entity)})
-    set_width(position, widths[2])
-    local connected = destination_network(destination, player)
-    local network = row.add({type = "label", caption = connected and {"il-gui.network-connected"} or {"il-gui.network-disconnected"}})
-    set_width(network, widths[3])
-    network.style.font_color = connected and accent_colors.green or accent_colors.red
+    local endpoints = row.add({type = "flow", direction = "horizontal"})
+    set_width(endpoints, widths[2])
+    endpoints.style.vertical_align = "center"
+    if #destination.pads < 5 then
+      for _, pad in ipairs(destination.pads) do
+        local btn = endpoints.add({type = "sprite-button", sprite = "utility/map", tooltip = {"", {"il-gui.landing-pad"}, "\n", Util.gps(pad)}})
+        btn.style.size = 28
+        btn.style.right_margin = 2
+      end
+    else
+      endpoints.add({type = "label", caption = {"il-gui.landing-pad-count", #destination.pads}})
+    end
   end
   if #destinations == 0 then rows.add({type = "label", caption = {"il-gui.no-destinations"}, style = "il_empty_state"}) end
 end
@@ -579,8 +700,8 @@ local function build_destinations(parent, player)
   local destinations = destination_list(player)
   local widths = layout(player).destinations
   add_heading(parent, {"il-gui.destinations"}, {"il-gui.destinations-subtitle"})
-  add_metrics(parent, {{#destinations, {"il-gui.metric-delivery-endpoints"}, name = "il-metric-destinations", sprite = "utility/reference_point", color = accent_colors.orange}})
-  add_columns(parent, {{{"il-gui.planet"}, widths[1]}, {{"il-gui.position"}, widths[2]}, {{"il-gui.logistics-network"}, widths[3]}})
+  add_metrics(parent, {{destination_pad_count(destinations), {"il-gui.metric-delivery-endpoints"}, name = "il-metric-destinations", sprite = "utility/reference_point", color = accent_colors.orange}})
+  add_columns(parent, {{{"il-gui.planet"}, widths[1]}, {{"il-gui.landing-pads"}, widths[2]}})
   build_destination_rows(add_scroll(parent, "il-destination-list", player), player)
 end
 
@@ -633,7 +754,7 @@ local function current_view(gui_state)
   local view = gui_state.view
   if view_names[view] then return view end
   local legacy = gui_state.main_tab_index
-  return ({[1] = "fleet", [2] = "requests", [3] = "destinations", [4] = "history"})[legacy or 1] or "fleet"
+  return ({[1] = "fleet", [2] = "requests", [3] = "shipments", [4] = "destinations", [5] = "history"})[legacy or 1] or "fleet"
 end
 
 local function capture_view(frame, gui_state)
@@ -650,6 +771,7 @@ local function add_navigation(parent, player, selected)
   local entries = {
     {"fleet", {"il-gui.fleet-monitor"}, "utility/starmap_platform_stacked"},
     {"requests", {"il-gui.requests"}, "utility/list_view"},
+    {"shipments", {"il-gui.shipments"}, "utility/cargo_plane"},
     {"destinations", {"il-gui.destinations"}, "utility/reference_point"},
     {"history", {"il-gui.history"}, "utility/clock"}
   }
@@ -721,6 +843,7 @@ function Gui.build(player)
   views.style.vertically_stretchable = true
   add_view(views, "fleet", player, build_fleet, selected)
   add_view(views, "requests", player, build_requests, selected)
+  add_view(views, "shipments", player, build_shipments, selected)
   add_view(views, "destinations", player, build_destinations, selected)
   add_view(views, "history", player, build_history, selected)
   gui_state.rebuilding = nil
@@ -748,8 +871,13 @@ local function refresh_summaries(frame, player)
   set_metric(frame, "il-metric-fleet-attention", attention)
   set_metric(frame, "il-metric-request-active", #request_list(player, false))
   set_metric(frame, "il-metric-request-attention", #request_list(player, true))
-  set_metric(frame, "il-metric-destinations", #destination_list(player))
+  set_metric(frame, "il-metric-destinations", destination_pad_count(destination_list(player)))
   set_metric(frame, "il-metric-history", history_count(player))
+  local s_total, s_loading, s_delivering, s_finished = shipment_counts(player)
+  set_metric(frame, "il-metric-shipments-total", s_total)
+  set_metric(frame, "il-metric-shipments-loading", s_loading)
+  set_metric(frame, "il-metric-shipments-delivering", s_delivering)
+  set_metric(frame, "il-metric-shipments-finished", s_finished)
 end
 
 local function refresh_request_detail(frame, player)
@@ -786,6 +914,14 @@ function Gui.refresh_destinations_structure(player)
   refresh_summaries(frame, player)
 end
 
+function Gui.refresh_shipments_structure(player)
+  local frame = player.gui.screen[dashboard_name]
+  if not frame or not frame.valid then return end
+  refill(frame, "il-shipment-list-rows", build_shipment_rows, player)
+  refresh_summaries(frame, player)
+  Gui.refresh_player(player)
+end
+
 function Gui.refresh_structure(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
@@ -793,6 +929,7 @@ function Gui.refresh_structure(player)
   refill(frame, "il-fleet-other-rows", build_platform_rows, player, false)
   refill(frame, "il-request-active-rows", build_request_rows, player, false)
   refill(frame, "il-request-attention-rows", build_request_rows, player, true)
+  refill(frame, "il-shipment-list-rows", build_shipment_rows, player)
   refill(frame, "il-destination-list-rows", build_destination_rows, player)
   refill(frame, "il-history-list-rows", build_history_rows, player)
   refresh_summaries(frame, player)
@@ -893,6 +1030,45 @@ function Gui.refresh_player(player)
     if id and state.requests[id] then
       element.caption = {"il-gui.request-status-" .. state.requests[id].status}
       element.style.font_color = status_colors[state.requests[id].status] or status_colors.idle
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-request%-destination%-(%d+)$"))
+    if id and state.requests[id] then
+      element.caption = state.requests[id].destination or "?"
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-request%-shortage%-(%d+)$"))
+    if id and state.requests[id] then
+      element.caption = tostring(state.requests[id].observed_shortage or state.requests[id].amount or 0)
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-request%-active%-(%d+)$"))
+    if id and state.requests[id] then
+      local amt = state.requests[id].active_shipment_amount or 0
+      element.caption = tostring(amt)
+      element.style.font_color = amt > 0 and accent_colors.blue or {r = 1, g = 1, b = 1}
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-request%-shipments%-(%d+)$"))
+    if id then
+      element.caption = tostring(demand_shipment_count(id))
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-shipment%-status%-(%d+)$"))
+    if id and state.shipments[id] then
+      element.caption = {"il-gui.shipment-status-" .. state.shipments[id].status}
+      element.style.font_color = status_colors[state.shipments[id].status] or status_colors.idle
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-shipment%-amount%-(%d+)$"))
+    if id and state.shipments[id] then
+      local s = state.shipments[id]
+      element.caption = {"", tostring(s.allocated_amount or 0), " / ", tostring(s.amount or 0)}
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-shipment%-route%-(%d+)$"))
+    if id and state.shipments[id] then
+      element.caption = shipment_route(state.shipments[id])
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-route%-(%d+)$"))

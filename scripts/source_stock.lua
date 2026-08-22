@@ -1,15 +1,9 @@
-local State = require("scripts.state")
 local Util = require("scripts.util")
 
 local SourceStock = {}
 
 local cache_tick
-local provider_cache = {}
-
-local function source_reserve()
-  local setting = settings and settings.global and settings.global["il-source-reserve"]
-  return setting and (setting.value or setting) or 0
-end
+local network_cache = {}
 
 local function planet_surfaces()
   local surfaces = {}
@@ -21,71 +15,129 @@ local function planet_surfaces()
   return surfaces
 end
 
-local function provider_count(surface, force, request, fresh)
+local function network_id_less(a, b)
+  if a == nil then
+    return false
+  end
+  if b == nil then
+    return true
+  end
+  return a < b
+end
+
+local function largest_network_result(surface, force, demand, fresh)
   if cache_tick ~= game.tick then
     cache_tick = game.tick
-    provider_cache = {}
-  end
-  local cache_key = table.concat({force.index, surface.index, request.item, request.quality or "normal"}, "|")
-  if not fresh and provider_cache[cache_key] ~= nil then
-    return provider_cache[cache_key]
+    network_cache = {}
   end
 
-  local total = 0
-  local networks = {}
-  for _, silo in pairs(surface.find_entities_filtered({type = "rocket-silo", force = force}) or {}) do
-    if silo.valid then
-      local network = force.find_logistic_network_by_position(silo.position, surface)
-      if network and network.valid and not networks[network.network_id] then
-        networks[network.network_id] = true
-        total = total + (network.get_item_count(Util.item_id(request.item, request.quality), "providers") or 0)
+  local cache_key = table.concat({
+    tostring(force.index),
+    tostring(surface.index),
+    demand.item,
+    demand.quality or "normal"
+  }, "|")
+  if not fresh and network_cache[cache_key] then
+    return network_cache[cache_key]
+  end
+
+  local largest = {network_id = nil, available = 0}
+  local logistic_networks = force.logistic_networks
+  local networks = logistic_networks and (logistic_networks[surface.name] or logistic_networks[surface.index])
+  for _, network in pairs(networks or {}) do
+    if network.valid then
+      local available = network.get_item_count(Util.item_id(demand.item, demand.quality)) or 0
+      if available > largest.available
+        or (available == largest.available and network_id_less(network.network_id, largest.network_id))
+      then
+        largest = {network_id = network.network_id, available = available}
       end
     end
   end
+
   if not fresh then
-    provider_cache[cache_key] = total
+    network_cache[cache_key] = largest
   end
-  return total
+  return largest
 end
 
-local function available_on_surface(request, force, surface, fresh)
-  local location = Util.surface_location(surface)
-  return math.max(0, provider_count(surface, force, request, fresh)
-    - State.reserved_count(location, request.item, request.quality, request.id))
+local function planning_amount(demand)
+  if demand.unplanned_amount ~= nil then
+    return demand.unplanned_amount
+  end
+  return demand.amount or 0
 end
 
-function SourceStock.available(request, force, location, fresh)
-  if not location or not force or not force.valid then
-    return 0
+local function source_less(a, b, needed)
+  local a_full = a.available >= needed
+  local b_full = b.available >= needed
+  if a_full ~= b_full then
+    return a_full
   end
-  local total = 0
-  for _, surface in ipairs(planet_surfaces()) do
-    if surface.index ~= request.destination_surface_index
-      and Util.surface_location(surface) == location
-    then
-      total = total + provider_count(surface, force, request, fresh)
-    end
+  if a.available ~= b.available then
+    return a.available > b.available
   end
-  return math.max(0, total - State.reserved_count(location, request.item, request.quality, request.id) - source_reserve())
+  if a.location ~= b.location then
+    return a.location < b.location
+  end
+  if a.surface_index ~= b.surface_index then
+    return a.surface_index < b.surface_index
+  end
+  return network_id_less(a.network_id, b.network_id)
 end
 
-function SourceStock.rank(request, force)
+function SourceStock.snapshot(demand, force)
   local sources = {}
-  local reserve = source_reserve()
+  if not force or not force.valid then
+    return sources
+  end
+
   for _, surface in ipairs(planet_surfaces()) do
-    if surface.index ~= request.destination_surface_index then
-      local location = Util.surface_location(surface)
-      local available = math.max(0, available_on_surface(request, force, surface, false) - reserve)
-      if available >= request.amount then
+    if surface.index ~= demand.destination_surface_index then
+      local largest = largest_network_result(surface, force, demand, false)
+      if largest.available > 0 then
         sources[#sources + 1] = {
           surface_index = surface.index,
-          location = location,
-          available = available
+          location = Util.surface_location(surface),
+          network_id = largest.network_id,
+          available = largest.available
         }
       end
     end
   end
+
+  local needed = planning_amount(demand)
+  table.sort(sources, function(a, b)
+    return source_less(a, b, needed)
+  end)
   return sources
+end
+
+function SourceStock.available(demand, force, location, fresh)
+  if not location or not force or not force.valid then
+    return 0
+  end
+
+  local available = 0
+  for _, surface in ipairs(planet_surfaces()) do
+    if surface.index ~= demand.destination_surface_index
+      and Util.surface_location(surface) == location
+    then
+      available = math.max(available, largest_network_result(surface, force, demand, fresh).available)
+    end
+  end
+  return available
+end
+
+function SourceStock.rank(demand, force)
+  local ranked = {}
+  local needed = demand.amount or 0
+  for _, source in ipairs(SourceStock.snapshot(demand, force)) do
+    if source.available >= needed then
+      ranked[#ranked + 1] = source
+    end
+  end
+  return ranked
 end
 
 return SourceStock

@@ -24,11 +24,35 @@ function Util.item_signal(name, quality)
   return {type = "item", name = name, quality = quality or "normal"}
 end
 
+function Util.is_shippable(item_name)
+  if not prototypes or not prototypes.item then return true end
+  local proto = prototypes.item[item_name]
+  if not proto then return false end
+  local mode = proto.send_to_orbit_mode
+  return mode == "manual" or mode == "automated"
+end
+
 function Util.surface_location(surface)
   if surface and surface.valid and surface.planet then
     return surface.planet.name
   end
   return surface and surface.name or "unknown"
+end
+
+function Util.group_destinations_by_planet(entities)
+  local by_planet = {}
+  for _, entity in ipairs(entities) do
+    local planet = Util.surface_location(entity.surface)
+    by_planet[planet] = by_planet[planet] or {}
+    by_planet[planet][#by_planet[planet] + 1] = entity
+  end
+  local list = {}
+  for planet, pads in pairs(by_planet) do
+    table.sort(pads, function(a, b) return a.unit_number < b.unit_number end)
+    list[#list + 1] = {planet = planet, pads = pads}
+  end
+  table.sort(list, function(a, b) return a.planet < b.planet end)
+  return list
 end
 
 function Util.get_platform(force, platform_index)
@@ -86,6 +110,42 @@ function Util.route_pairs(platform)
     return a.source < b.source
   end)
   return pairs_list
+end
+
+function Util.schedule_ordered_sources(platform, sources, destination)
+  local locations = Util.route_locations(platform)
+  local current = platform.space_location and platform.space_location.name
+  local source_set = {}
+  for _, source in ipairs(sources) do
+    source_set[source.location] = source
+  end
+  local current_index = nil
+  for index, location in ipairs(locations) do
+    if location == current then
+      current_index = index
+      break
+    end
+  end
+  local ordered = {}
+  local seen = {}
+  if current_index then
+    for offset = 0, #locations - 1 do
+      local index = ((current_index + offset - 1) % #locations) + 1
+      local location = locations[index]
+      if location ~= destination and source_set[location] and not seen[location] then
+        seen[location] = true
+        ordered[#ordered + 1] = source_set[location]
+      end
+    end
+  else
+    for _, location in ipairs(locations) do
+      if location ~= destination and source_set[location] and not seen[location] then
+        seen[location] = true
+        ordered[#ordered + 1] = source_set[location]
+      end
+    end
+  end
+  return ordered
 end
 
 function Util.sorted_values(dictionary, predicate)

@@ -25,6 +25,8 @@ local function create_request(key, data)
       existing.amount = data.amount
       existing.requested = data.requested
       existing.current = data.current
+      existing.observed_shortage = data.amount
+      existing.unplanned_amount = math.max(0, (existing.observed_shortage or 0) - (existing.active_shipment_amount or 0))
     end
     existing.last_seen_tick = game.tick
     return existing
@@ -41,6 +43,9 @@ local function create_request(key, data)
   request.last_seen_tick = game.tick
   request.auto_approve_tick = auto_approve_tick()
   request.priority = request.priority or 0
+  request.observed_shortage = request.observed_shortage or request.amount or 0
+  request.active_shipment_amount = 0
+  request.unplanned_amount = request.observed_shortage
   state.requests[request.id] = request
   state.request_by_key[key] = request.id
   return request
@@ -63,7 +68,7 @@ local function collect_chest(chest, configured, groups)
   end
   local network = point.logistic_network
   for _, filter in pairs(point.filters or {}) do
-    if filter.name and (not filter.type or filter.type == "item") and filter.count > 0 then
+    if filter.name and (not filter.type or filter.type == "item") and filter.count > 0 and Util.is_shippable(filter.name) then
       local quality = quality_name(filter.quality)
       local item = Util.item_id(filter.name, quality)
       local inside = chest.get_item_count(item)
@@ -117,6 +122,13 @@ local function publish_chest_groups(groups, needed)
   for _, group in pairs(groups) do
     publish_chest_group(group, needed)
   end
+end
+
+local function sorted_dirty_chests(dirty)
+  local ids = {}
+  for unit_number in pairs(dirty) do ids[#ids + 1] = unit_number end
+  table.sort(ids)
+  return ids
 end
 
 local construction_entity_types = {"entity-ghost", "tile-ghost", "item-request-proxy"}
@@ -177,11 +189,13 @@ end
 local function add_construction_item(context, network, surface, position, name, quality, count)
   if not name or not count or count <= 0 then return end
   quality = quality_name(quality)
-  local network_id = network.network_id or 0
-  local key = table.concat({surface.index, network_id, name, quality}, "|")
+  local network_id = network and network.network_id or 0
+  local force_index = context.force_index or (context.force and context.force.index) or 0
+  local key = table.concat({force_index, surface.index, network_id, name, quality}, "|")
   local entry = context.aggregate[key]
   if not entry then
     entry = {
+      force_index = force_index,
       surface_index = surface.index,
       network_id = network_id,
       network = network,
@@ -200,7 +214,7 @@ local function add_placement_item(context, network, surface, entity)
   if not prototype or prototype.valid == false then return end
   local items = prototype.items_to_place_this
   local item = items and (items[1] or items)
-  if item and item.name then
+  if item and item.name and Util.is_shippable(item.name) then
     add_construction_item(
       context,
       network,
@@ -215,15 +229,17 @@ end
 
 local function add_item_requests(context, network, surface, entity)
   for _, request in pairs(entity.item_requests or {}) do
-    add_construction_item(
-      context,
-      network,
-      surface,
-      entity.position,
-      request.name,
-      request.quality,
-      request.count
-    )
+    if Util.is_shippable(request.name) then
+      add_construction_item(
+        context,
+        network,
+        surface,
+        entity.position,
+        request.name,
+        request.quality,
+        request.count
+      )
+    end
   end
 end
 
@@ -263,9 +279,10 @@ end
 local function publish_construction_entry(context, entry, configured, needed)
   local surface = game.get_surface(entry.surface_index)
   if not surface then return end
+  local force_index = entry.force_index or (context.force and context.force.index) or 0
   local request_key = table.concat({
     "alert",
-    context.force.index,
+    force_index,
     entry.surface_index,
     entry.network_id,
     entry.item,
@@ -283,7 +300,7 @@ local function publish_construction_entry(context, entry, configured, needed)
   needed[request_key] = true
   create_request(request_key, {
     origin = "construction-alert",
-    force_index = context.force.index,
+    force_index = force_index,
     destination_surface_index = surface.index,
     destination = Util.surface_location(surface),
     logistic_network_id = entry.network_id,
@@ -407,6 +424,12 @@ local function sorted_forces()
   return result
 end
 
+local function scan_force_indices()
+  local result = {}
+  for _, force in ipairs(sorted_forces()) do result[#result + 1] = force.index end
+  return result
+end
+
 local function scan_construction(configured, needed)
   for _, force in ipairs(sorted_forces()) do
     local context = start_construction_context(force)
@@ -437,6 +460,495 @@ local function retire_unseen(configured, needed)
   end
 end
 
+local function process_single_chest(unit_number)
+  local state = State.ensure()
+  local chest = game.get_entity_by_unit_number(unit_number)
+  if not chest or not chest.valid or chest.name ~= Constants.chest_name then
+    state.chests[unit_number] = nil
+    Demands.retire_chest(unit_number)
+    return
+  end
+  state.chests[unit_number] = true
+  local configured = {}
+  local needed = {}
+  local groups = {}
+  collect_chest(chest, configured, groups)
+  publish_chest_groups(groups, needed)
+  local prefix = "chest|" .. unit_number .. "|"
+  for key in pairs(state.request_by_key) do
+    if string.sub(key, 1, #prefix) == prefix and not configured[key] then
+      retire_request(state, key, configured, needed)
+    end
+  end
+  for key in pairs(configured) do
+    if not needed[key] then
+      retire_request(state, key, configured, needed)
+    end
+  end
+end
+
+function Demands.mark_chest_dirty(unit_number)
+  local state = State.ensure()
+  state.chest_dirty[unit_number] = true
+end
+
+function Demands.chest_dirty_active()
+  return next(State.ensure().chest_dirty) ~= nil
+end
+
+function Demands.step_chest_dirty(budget)
+  local state = State.ensure()
+  if not next(state.chest_dirty) then return true end
+  budget = math.max(1, budget or Constants.chest_dirty_work_per_tick)
+  local ids = sorted_dirty_chests(state.chest_dirty)
+  local processed = 0
+  for index = 1, #ids do
+    if processed >= budget then return false end
+    local unit_number = ids[index]
+    state.chest_dirty[unit_number] = nil
+    process_single_chest(unit_number)
+    processed = processed + 1
+  end
+  return next(state.chest_dirty) == nil
+end
+
+function Demands.retire_chest(unit_number)
+  local state = State.ensure()
+  local prefix = "chest|" .. unit_number .. "|"
+  local to_remove = {}
+  for key in pairs(state.request_by_key) do
+    if string.sub(key, 1, #prefix) == prefix then
+      to_remove[#to_remove + 1] = key
+    end
+  end
+  table.sort(to_remove)
+  for _, key in ipairs(to_remove) do
+    local request_id = state.request_by_key[key]
+    local request = request_id and state.requests[request_id]
+    if request then
+      if Constants.active_statuses[request.status] then
+        Platforms.cancel(request, "Chest removed")
+      end
+      state.suppressions[key] = nil
+      state.request_by_key[key] = nil
+      request.status = "cancelled"
+      request.last_reason = "Chest removed"
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Event-driven construction tracking
+-- ---------------------------------------------------------------------------
+
+local function is_construction_type(name)
+  return name == "entity-ghost" or name == "tile-ghost" or name == "item-request-proxy"
+end
+
+local function find_network_for_position(surface, position, force)
+  if not surface or not surface.valid or not surface.find_logistic_network_by_position then return nil end
+  local network = surface.find_logistic_network_by_position(position, force)
+  if network and network.valid ~= false then return network end
+  return nil
+end
+
+local function sorted_dirty_construction(dirty)
+  local keys = {}
+  for key in pairs(dirty) do keys[#keys + 1] = key end
+  table.sort(keys)
+  return keys
+end
+
+local function sorted_tracked_keys(tracked)
+  local keys = {}
+  for key in pairs(tracked) do keys[#keys + 1] = key end
+  table.sort(keys)
+  return keys
+end
+
+function Demands.track_construction(entity)
+  if not entity or not entity.valid then return end
+  if not is_construction_type(entity.name) then return end
+  local state = State.ensure()
+  local surface = entity.surface
+  if not surface then return end
+  local key = entity_key(surface.index, entity)
+  state.tracked_construction[key] = {
+    surface_index = surface.index,
+    unit_number = entity.unit_number,
+    name = entity.name,
+    position = {x = entity.position.x, y = entity.position.y},
+    force_index = entity.force and entity.force.index or 0
+  }
+  state.construction_dirty[key] = true
+end
+
+function Demands.untrack_construction(entity)
+  if not entity then return end
+  local state = State.ensure()
+  local surface = entity.surface
+  local key
+  if surface then
+    key = entity_key(surface.index, entity)
+  elseif entity.unit_number then
+    -- Fallback: search by unit_number in tracked entries
+    for tracked_key, tracked in pairs(state.tracked_construction) do
+      if tracked.unit_number == entity.unit_number then
+        key = tracked_key
+        break
+      end
+    end
+  end
+  if not key then return end
+  local tracked = state.tracked_construction[key]
+  state.tracked_construction[key] = nil
+  state.construction_dirty[key] = nil
+  if tracked then
+    -- Mark all other tracked entities on the same (force, surface) dirty
+    -- so the dirty queue re-aggregates and updates demands for remaining entities
+    for _, other_key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+      local other = state.tracked_construction[other_key]
+      if other and other.surface_index == tracked.surface_index
+        and other.force_index == tracked.force_index then
+        state.construction_dirty[other_key] = true
+      end
+    end
+    -- Retire demands for the affected surface (will be re-created by dirty queue if needed)
+    local prefix = table.concat({"alert", tracked.force_index, tracked.surface_index, ""}, "|")
+    local to_retire = {}
+    for demand_key in pairs(state.request_by_key) do
+      if string.sub(demand_key, 1, #prefix) == prefix then
+        to_retire[#to_retire + 1] = demand_key
+      end
+    end
+    table.sort(to_retire)
+    for _, demand_key in ipairs(to_retire) do
+      retire_request(state, demand_key, {}, {})
+    end
+  end
+end
+
+function Demands.untrack_construction_at_position(surface_index, position)
+  if not surface_index or not position then return end
+  local state = State.ensure()
+  local to_untrack = {}
+  for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+    local tracked = state.tracked_construction[key]
+    if tracked and tracked.surface_index == surface_index
+      and tracked.position.x == position.x and tracked.position.y == position.y then
+      to_untrack[#to_untrack + 1] = key
+    end
+  end
+  for _, key in ipairs(to_untrack) do
+    local tracked = state.tracked_construction[key]
+    state.tracked_construction[key] = nil
+    state.construction_dirty[key] = nil
+    if tracked then
+      local prefix = table.concat({"alert", tracked.force_index, tracked.surface_index, ""}, "|")
+      local to_retire = {}
+      for demand_key in pairs(state.request_by_key) do
+        if string.sub(demand_key, 1, #prefix) == prefix then
+          to_retire[#to_retire + 1] = demand_key
+        end
+      end
+      table.sort(to_retire)
+      for _, demand_key in ipairs(to_retire) do
+        retire_request(state, demand_key, {}, {})
+      end
+      -- Mark other tracked entities on the same surface dirty
+      for _, other_key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+        local other = state.tracked_construction[other_key]
+        if other and other.surface_index == tracked.surface_index
+          and other.force_index == tracked.force_index then
+          state.construction_dirty[other_key] = true
+        end
+      end
+    end
+  end
+end
+
+function Demands.construction_dirty_active()
+  return next(State.ensure().construction_dirty) ~= nil
+end
+
+local function reaggregate_construction_surface(state, force_index, surface_index, configured, needed)
+  local surface = game.get_surface(surface_index)
+  if not surface or not surface.valid then return end
+  local force = game.forces[force_index]
+  if not force or not force.valid then return end
+  local context = {
+    aggregate = {},
+    seen = {},
+    force = force,
+    force_index = force_index
+  }
+  for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+    local tracked = state.tracked_construction[key]
+    if tracked and tracked.surface_index == surface_index and tracked.force_index == force_index then
+      local entity = tracked.unit_number and game.get_entity_by_unit_number(tracked.unit_number) or nil
+      if entity and entity.valid and entity.is_registered_for_construction
+        and entity.is_registered_for_construction() then
+        local network = find_network_for_position(surface, tracked.position, force)
+        aggregate_construction_entity(context, network, surface, entity)
+      else
+        -- Entity no longer valid/registered; remove from tracking
+        state.tracked_construction[key] = nil
+      end
+    end
+  end
+  -- Publish demands from the aggregate
+  local aggregate_keys = {}
+  for key in pairs(context.aggregate) do aggregate_keys[#aggregate_keys + 1] = key end
+  table.sort(aggregate_keys)
+  for _, key in ipairs(aggregate_keys) do
+    publish_construction_entry(context, context.aggregate[key], configured, needed)
+  end
+end
+
+function Demands.step_construction_dirty(budget)
+  local state = State.ensure()
+  if not next(state.construction_dirty) then return true end
+  budget = math.max(1, budget or Constants.construction_dirty_work_per_tick)
+  local keys = sorted_dirty_construction(state.construction_dirty)
+  local processed = 0
+  local affected = {}
+  for index = 1, #keys do
+    if processed >= budget then return false end
+    local key = keys[index]
+    state.construction_dirty[key] = nil
+    local tracked = state.tracked_construction[key]
+    if tracked then
+      local pair_key = tracked.force_index .. "|" .. tracked.surface_index
+      if not affected[pair_key] then
+        affected[pair_key] = {force_index = tracked.force_index, surface_index = tracked.surface_index}
+      end
+    end
+    processed = processed + 1
+  end
+  -- Re-aggregate each affected surface
+  local configured = {}
+  local needed = {}
+  local affected_list = {}
+  for _, pair in pairs(affected) do affected_list[#affected_list + 1] = pair end
+  table.sort(affected_list, function(a, b)
+    if a.force_index == b.force_index then return a.surface_index < b.surface_index end
+    return a.force_index < b.force_index
+  end)
+  for _, pair in ipairs(affected_list) do
+    reaggregate_construction_surface(state, pair.force_index, pair.surface_index, configured, needed)
+  end
+  -- Retire demands for affected surfaces: both unconfigured and configured-but-not-needed
+  for _, pair in ipairs(affected_list) do
+    local prefix = table.concat({"alert", pair.force_index, pair.surface_index, ""}, "|")
+    local to_retire = {}
+    for demand_key in pairs(state.request_by_key) do
+      if string.sub(demand_key, 1, #prefix) == prefix then
+        to_retire[#to_retire + 1] = demand_key
+      end
+    end
+    table.sort(to_retire)
+    for _, demand_key in ipairs(to_retire) do
+      retire_request(state, demand_key, configured, needed)
+    end
+  end
+  return next(state.construction_dirty) == nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Roboport topology reassociation
+-- ---------------------------------------------------------------------------
+
+function Demands.reassociate_construction(surface_index, force_index)
+  local state = State.ensure()
+  local surface = game.get_surface(surface_index)
+  if not surface or not surface.valid then return end
+  local force = game.forces[force_index]
+  if not force or not force.valid then return end
+  for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+    local tracked = state.tracked_construction[key]
+    if tracked and tracked.surface_index == surface_index and tracked.force_index == force_index then
+      -- Re-validate the entity and mark it dirty for re-aggregation
+      local entity = tracked.unit_number and game.get_entity_by_unit_number(tracked.unit_number) or nil
+      if entity and entity.valid then
+        tracked.position = {x = entity.position.x, y = entity.position.y}
+        state.construction_dirty[key] = true
+      else
+        state.tracked_construction[key] = nil
+        state.construction_dirty[key] = nil
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Bounded one-time bootstrap
+-- ---------------------------------------------------------------------------
+
+function Demands.start_bootstrap()
+  local state = State.ensure()
+  if state.bootstrap_job or state.bootstrap_completed then return false end
+  state.bootstrap_job = {
+    force_indices = scan_force_indices(),
+    force_index = 1,
+    surface_indices = nil,
+    surface_index = 1,
+    networks = nil,
+    network_index = 1,
+    cells = nil,
+    cell_index = 1,
+    entities = nil,
+    entity_index = 1,
+    phase = "force"
+  }
+  return true
+end
+
+function Demands.bootstrap_active()
+  return State.ensure().bootstrap_job ~= nil
+end
+
+function Demands.step_bootstrap(budget)
+  local state = State.ensure()
+  local job = state.bootstrap_job
+  if not job then return true end
+  budget = math.max(1, budget or Constants.bootstrap_work_per_tick)
+  local processed = 0
+  while processed < budget do
+    if job.phase == "force" then
+      local force_index = job.force_indices[job.force_index]
+      if not force_index then
+        state.bootstrap_job = nil
+        state.bootstrap_completed = true
+        return true
+      end
+      local force = game.forces[force_index]
+      if force and force.valid then
+        job.current_force = force
+        job.surface_indices = sorted_construction_surfaces(force)
+        job.surface_index = 1
+        job.phase = "surface"
+      else
+        job.force_index = job.force_index + 1
+      end
+      processed = processed + 1
+    elseif job.phase == "surface" then
+      local surface_index = job.surface_indices[job.surface_index]
+      if not surface_index then
+        job.force_index = job.force_index + 1
+        job.phase = "force"
+      else
+        job.current_surface = game.get_surface(surface_index)
+        job.surface_index = job.surface_index + 1
+        if job.current_surface and job.current_surface.valid then
+          job.networks = sorted_networks(job.current_force, job.current_surface)
+          job.network_index = 1
+          job.phase = "network"
+        end
+      end
+      processed = processed + 1
+    elseif job.phase == "network" then
+      local network = job.networks[job.network_index]
+      if not network then
+        job.networks = nil
+        job.current_surface = nil
+        job.phase = "surface"
+      else
+        job.network_index = job.network_index + 1
+        if network.valid ~= false then
+          job.current_network = network
+          job.cells = sorted_cells(network)
+          job.cell_index = 1
+          job.phase = "cell"
+        end
+      end
+      processed = processed + 1
+    elseif job.phase == "cell" then
+      local cell = job.cells[job.cell_index]
+      if not cell then
+        job.cells = nil
+        job.current_network = nil
+        job.phase = "network"
+      else
+        job.cell_index = job.cell_index + 1
+        if cell.valid ~= false
+          and job.current_network
+          and job.current_network.valid ~= false
+          and job.current_surface
+          and job.current_surface.valid ~= false
+        then
+          local owner = cell.owner
+          if owner and owner.valid ~= false and owner.position then
+            local radius = cell.construction_radius or 0
+            local position = owner.position
+            job.entities = job.current_surface.find_entities_filtered({
+              area = {
+                {x = position.x - radius, y = position.y - radius},
+                {x = position.x + radius, y = position.y + radius}
+              },
+              type = construction_entity_types,
+              force = job.current_force
+            }) or {}
+            job.entity_index = 1
+            job.phase = "entity"
+          end
+        end
+        processed = processed + 1
+      end
+    elseif job.phase == "entity" then
+      if not job.current_network or job.current_network.valid == false then
+        job.entities = nil
+        job.cells = nil
+        job.current_network = nil
+        job.phase = "network"
+        processed = processed + 1
+      else
+        local entity = job.entities[job.entity_index]
+        if not entity then
+          job.entities = nil
+          job.phase = "cell"
+        else
+          job.entity_index = job.entity_index + 1
+          if entity.valid and is_construction_type(entity.name)
+            and entity.is_registered_for_construction
+            and entity.is_registered_for_construction() then
+            Demands.track_construction(entity)
+          end
+          processed = processed + 1
+        end
+      end
+    else
+      state.bootstrap_job = nil
+      state.bootstrap_completed = true
+      return true
+    end
+  end
+  return state.bootstrap_job == nil
+end
+
+local function scan_tracked_construction(configured, needed)
+  local state = State.ensure()
+  -- Group affected (force, surface) pairs from tracked construction
+  local surfaces = {}
+  for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+    local tracked = state.tracked_construction[key]
+    if tracked then
+      local pair_key = tracked.force_index .. "|" .. tracked.surface_index
+      if not surfaces[pair_key] then
+        surfaces[pair_key] = {force_index = tracked.force_index, surface_index = tracked.surface_index}
+      end
+    end
+  end
+  local surface_list = {}
+  for _, pair in pairs(surfaces) do surface_list[#surface_list + 1] = pair end
+  table.sort(surface_list, function(a, b)
+    if a.force_index == b.force_index then return a.surface_index < b.surface_index end
+    return a.force_index < b.force_index
+  end)
+  for _, pair in ipairs(surface_list) do
+    reaggregate_construction_surface(state, pair.force_index, pair.surface_index, configured, needed)
+  end
+end
+
 function Demands.scan()
   local state = State.ensure()
   state.scan_job = nil
@@ -452,7 +964,7 @@ function Demands.scan()
     end
   end
   publish_chest_groups(groups, needed)
-  scan_construction(configured, needed)
+  scan_tracked_construction(configured, needed)
   retire_unseen(configured, needed)
 end
 
@@ -463,15 +975,29 @@ local function sorted_scan_chests(chests)
   return ids
 end
 
-local function scan_force_indices()
-  local result = {}
-  for _, force in ipairs(sorted_forces()) do result[#result + 1] = force.index end
-  return result
-end
-
 function Demands.start_scan()
   local state = State.ensure()
   if state.scan_job or state.process_job then return false end
+  -- Collect (force, surface) pairs from tracked construction
+  local construction_surfaces = {}
+  for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+    local tracked = state.tracked_construction[key]
+    if tracked then
+      local pair_key = tracked.force_index .. "|" .. tracked.surface_index
+      if not construction_surfaces[pair_key] then
+        construction_surfaces[pair_key] = {
+          force_index = tracked.force_index,
+          surface_index = tracked.surface_index
+        }
+      end
+    end
+  end
+  local construction_surface_list = {}
+  for _, pair in pairs(construction_surfaces) do construction_surface_list[#construction_surface_list + 1] = pair end
+  table.sort(construction_surface_list, function(a, b)
+    if a.force_index == b.force_index then return a.surface_index < b.surface_index end
+    return a.force_index < b.force_index
+  end)
   state.scan_job = {
     phase = "chests",
     chest_ids = sorted_scan_chests(state.chests),
@@ -479,9 +1005,11 @@ function Demands.start_scan()
     configured = {},
     needed = {},
     groups = {},
-    construction_forces = scan_force_indices(),
+    construction_surfaces = construction_surface_list,
     construction_index = 1,
-    construction_context = nil
+    construction_aggregate = {},
+    construction_aggregate_keys = nil,
+    construction_aggregate_index = 1
   }
   return true
 end
@@ -527,8 +1055,49 @@ function Demands.step_scan(budget)
         processed = processed + 1
       end
     elseif job.phase == "construction" then
-      local force_index = job.construction_forces[job.construction_index]
-      if not force_index then
+      local pair = job.construction_surfaces[job.construction_index]
+      if not pair then
+        -- Publish aggregated construction demands
+        job.construction_aggregate_keys = {}
+        for key in pairs(job.construction_aggregate) do
+          job.construction_aggregate_keys[#job.construction_aggregate_keys + 1] = key
+        end
+        table.sort(job.construction_aggregate_keys)
+        job.construction_aggregate_index = 1
+        job.phase = "construction-publish"
+        return false
+      else
+        -- Aggregate tracked construction for this (force, surface)
+        local surface = game.get_surface(pair.surface_index)
+        local force = game.forces[pair.force_index]
+        if surface and surface.valid and force and force.valid then
+          local context = {
+            aggregate = job.construction_aggregate,
+            seen = {},
+            force = force,
+            force_index = pair.force_index
+          }
+          for _, key in ipairs(sorted_tracked_keys(state.tracked_construction)) do
+            local tracked = state.tracked_construction[key]
+            if tracked and tracked.surface_index == pair.surface_index
+              and tracked.force_index == pair.force_index then
+              local entity = tracked.unit_number and game.get_entity_by_unit_number(tracked.unit_number) or nil
+              if entity and entity.valid and entity.is_registered_for_construction
+                and entity.is_registered_for_construction() then
+                local network = find_network_for_position(surface, tracked.position, force)
+                aggregate_construction_entity(context, network, surface, entity)
+              else
+                state.tracked_construction[key] = nil
+              end
+            end
+          end
+        end
+        job.construction_index = job.construction_index + 1
+        processed = processed + 1
+      end
+    elseif job.phase == "construction-publish" then
+      local key = job.construction_aggregate_keys[job.construction_aggregate_index]
+      if not key then
         job.retire_keys = {}
         for key in pairs(state.request_by_key) do job.retire_keys[#job.retire_keys + 1] = key end
         table.sort(job.retire_keys)
@@ -536,29 +1105,12 @@ function Demands.step_scan(budget)
         job.phase = "retire"
         return false
       else
-        if not job.construction_context then
-          local force = game.forces[force_index]
-          if force and force.valid then
-            job.construction_context = start_construction_context(force)
-          else
-            job.construction_index = job.construction_index + 1
-          end
-          processed = processed + 1
-          return state.scan_job == nil
-        else
-          local done, used = step_construction_context(
-            job.construction_context,
-            budget - processed,
-            job.configured,
-            job.needed
-          )
-          processed = processed + used
-          if done then
-            job.construction_context = nil
-            job.construction_index = job.construction_index + 1
-          end
-          return state.scan_job == nil
+        local entry = job.construction_aggregate[key]
+        if entry then
+          publish_construction_entry({}, entry, job.configured, job.needed)
         end
+        job.construction_aggregate_index = job.construction_aggregate_index + 1
+        processed = processed + 1
       end
     elseif job.phase == "retire" then
       local key = job.retire_keys[job.retire_index]

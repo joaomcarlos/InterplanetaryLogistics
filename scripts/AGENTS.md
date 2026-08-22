@@ -6,56 +6,57 @@ All runtime logic for the Interplanetary Logistics mod. Modules are loaded via `
 
 ## Ownership
 
-Each module owns a single responsibility. Cross-module calls flow downward: `control` → `demands` → `router` → `platforms` → `state`/`util`. `gui` reads state and calls public demand/platform actions from GUI events.
+Each module owns a single responsibility. Calls flow from event-driven demand discovery through multi-ship planning into vanilla-logistics execution: `control` → `demands` → `router` → `platforms` → `state`/`util`. `gui` reads persisted Demands and Shipments and invokes their public actions.
 
 ## Local Contracts
 
-- `constants.lua` — Entity names, scan/monitor/ETA timeouts, active statuses, schema version, and history limit
-- `state.lua` — Persistent requests, requester-chest and landing-pad destinations, reservations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
-- `util.lua` — Pure item, signal, surface, route, platform, formatting, sorting, GPS, ghost, and sprite helpers
-- `demands.lua` — Shortage scanning, request lifecycle, priority, approval, suppression, and retirement
-- `router.lua` — Reservation-aware source ranking, ETA/pin-aware platform matching, and dispatch delegation
-- `platforms.lua` — Enrollment, ETA/status/stuck monitoring, route pinning, ready signals, temporary schedules, request sections, return cargo, and transfer lifecycle
-- `scheduler.lua` — Single-lane routing and maintenance scheduling with routing priority at scan boundaries
-- `gui.lua` — High-volume dashboard with Fleet Monitor first; native navigation views for Fleet, Requests, Destinations, and History; Requests includes a fixed detail panel; one scroll owner per visible list
-
-- `source_stock.lua` — Fresh and cached provider-stock lookup for rocket-silo logistic networks
+- `constants.lua` — Entity names, reconciliation/execution timeouts, bounded-work budgets, active statuses, schema version, and history limit
+- `state.lua` — Persistent Demands, Shipments, Demand-owned pad sections, tracked construction entities, dirty queues, bootstrap state, destinations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
+- `util.lua` — Pure item, signal, surface, route, platform, destination grouping, formatting, sorting, GPS, ghost, and sprite helpers
+- `demands.lua` — Event-driven chest/construction discovery, tracked reconciliation, Demand lifecycle, priority, approval, suppression, and retirement
+- `router.lua` — Largest-network source snapshots, deterministic multi-source/multi-ship planning, schedule eligibility, and Shipment creation
+- `platforms.lua` — Enrollment, Shipment execution, platform/landing-pad logistic sections, temporary schedules, event-driven progress, cleanup, return cargo, and failure lifecycle
+- `scheduler.lua` — Independent bounded dirty queues, tracked reconciliation, Shipment maintenance, fleet snapshots, and GUI refresh scheduling
+- `gui.lua` — High-volume dashboard with Fleet Monitor first; native navigation views for Fleet, Trade Requests, Shipments, Destinations, and History; one scroll owner per visible list
+- `source_stock.lua` — Same-tick exact item/quality aggregate reads from Factorio-maintained logistic-network arrays; no entity or silo discovery
 
 ## Work Guidance
 
-- Fleet Monitor must remain the first dashboard view. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset navigation or request selection, or move scroll position.
+- Fleet Monitor must remain the first dashboard view. Automatic/manual refreshes update existing elements in place and must not replace the frame, reset navigation or selection, or move scroll position.
+- Native navigation exposes Fleet Monitor, Trade Requests, Shipments, Destinations, and History. Trade Requests aggregate destination Demands; Shipments expose individual ship execution and link back to their parent Demand.
 - Never nest vertical scroll panes. Keep summaries and column headers outside the single list scroll pane for each visible view.
 - Do not use nested tabbed panes for dashboard navigation. Native button navigation keeps the layout tree shallow and avoids the engine sizing recursion observed in `TabbedPane::setSize`.
 - Every custom GUI style must specify a `parent` to inherit proper default sizing from Factorio's base styles.
 - Treat cohesive native styles, visual hierarchy, consistent spacing, readable density, interaction states, tooltips, empty states, and responsive sizing as required implementation work, not optional follow-up polish.
-- Use native utility sprites for 32 x 32 row actions and preserve rectangular buttons for text-heavy primary actions. Apply consistent blue, green, orange, red, and muted text colors to statuses, ETAs, metrics, and selected request context.
-- Centralize width budgets in `layout()` so the navigation rail, list columns, scroll bar, and request detail panel always fit inside the frame at supported UI scales.
-- Delivery Fleet and Other Platforms are separate sections sorted by platform name. Requests are ordered by priority, workflow state, then id; selecting a request preserves its detail panel context.
-- Request route cells show `Routing...` until `request.source` resolves; never show the demand origin as a planet.
-- Enrollment clicks update controls in place so dashboard navigation and scroll position remain stable.
-- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once.
+- Use native utility sprites for 32 x 32 row actions and preserve rectangular buttons for text-heavy primary actions. Apply consistent blue, green, orange, red, and muted text colors to statuses, ETAs, metrics, and selected context.
+- Centralize width budgets in `layout()` so the navigation rail, list columns, scroll bar, and detail panels fit inside the frame at supported UI scales.
+- Delivery Fleet and Other Platforms are separate sections sorted by platform name. Demands are ordered by priority, workflow state, then id; Shipments use deterministic status and id ordering.
+- Enrollment clicks and structural/value refreshes update the smallest existing subtree so dashboard navigation and scroll position remain stable.
+- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once. `script.on_load` clears `destinations_initialized` so `ensure_destinations` rebuilds on first access after every save load.
+- The Destinations view shows one row per planet with at least one cargo landing pad; planets with only requester chests are hidden. Each row shows map buttons for individual pads when fewer than 5, or a count label when 5 or more.
 - Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
-- Dispatch order is deterministic: priority, creation tick, then request id.
-- Initialize every persistent field in `State.ensure()`.
-- Only add or remove schedule records with `temporary = true`; never mutate permanent records.
-- Sort iteration that affects game state.
-- Keep periodic monitoring single-owned: `Platforms.monitor()` runs from the control scheduler, not from both scan processing and the monitor interval.
-- Keep expensive provider/network queries cached for the current tick when multiple requests share the lookup; subtract live reservations after reading cached stock.
-- Keep construction-network scanning silent; diagnostics must not build log strings inside high-volume loops.
-- Periodic and manual scans use `Demands.start_scan()` plus bounded `Demands.step_scan()` work; do not reintroduce a full scan in `on_tick` or GUI events.
-- Construction demand comes from construction-registered entity ghosts, tile ghosts, and item-request proxies inside each force logistic network's construction cells; never reconstruct item identity or quality from `LuaPlayer.get_alerts()` wrapper prototypes.
-- Deduplicate ghosts/proxies across overlapping construction cells by entity identity, preserve LuaQualityPrototype names, aggregate by force/surface/network/item/quality, and subtract only matching live network inventory.
-- Revalidate cached logistic networks, cells, and owners when each bounded scan slice consumes them; Factorio Lua objects may become invalid between ticks.
-- Construction requests carry their logistic-network id so delivery selects a cargo landing pad in the same network; resolve a pad's network through its surface position because cargo landing pads do not expose `LuaEntity.logistic_network` directly.
+- A Demand is an exact destination need keyed by origin identity, destination surface/network, item, and quality. It owns observed shortage, active-shipment quantity, unplanned quantity, approval, priority, denial, and suppression.
+- Requester-chest observed shortage subtracts exact-quality chest contents and robot deliveries already targeted to that chest. Construction observed shortage subtracts exact-quality inventory in the tracked construction logistic network.
+- A Shipment assigns one enrolled ship to part of one Demand and may contain multiple ordered Pickup Legs. A Demand may own multiple concurrent Shipments.
+- Source planning reads exact item/quality counts from `force.logistic_networks` and uses the largest valid network count per planet. Prefer planets covering the full remainder, then the best partial counts.
+- Do not search surfaces for rocket silos or source entities, filter source counts to providers, preserve source reserves, or persist synthetic stock reservations. Factorio arbitrates real inventory contention.
+- Within one deterministic planning operation, an ephemeral availability copy may prevent one Demand from assigning the same observed units twice; this is not persisted as source state.
+- Multiple ships may fulfill one Demand. Each ship may use only source and destination planets present in its permanent schedule, and pickup order follows that schedule from its current position toward the destination.
+- Each Pickup Leg writes a planet-scoped platform-hub logistic request with a cumulative cargo target. Only append/remove temporary source and destination records; never mutate permanent records or their ordering.
+- One Demand-owned logistic section requests all active Shipment cargo at a landing pad in the destination network. Shipment-owned duplicate pad sections are forbidden.
+- Factorio owns bots, rocket-silo requests and launches, platform loading, orbital drops, landing-pad receipt, and local delivery. The mod observes those results and cleans up its request sections and temporary records.
+- Construction demand is maintained from construction-registered entity ghosts, tile ghosts, and item-request proxies through build/remove/revive/upgrade events. Preserve exact counts and LuaQualityPrototype names; never infer demand from alert wrapper prototypes. Only items with `send_to_orbit_mode` of `"manual"` or `"automated"` create Demands; `"not-sendable"` items are filtered at both chest and construction discovery.
+- A bounded one-time bootstrap may discover existing chests, pads, ghosts, tile ghosts, and proxies after installation or schema migration. Normal operation must never repeat a world or roboport-cell construction scan.
+- Immediate event dirty queues for chests, construction entities, and Shipments are independent. Low-priority reconciliation reads registered/tracked objects only and cannot block new requester-chest demand.
+- Roboport topology changes re-associate already tracked construction entities; they do not trigger broad surface searches.
+- Platform-state, cargo-pod, and logistic-slot events drive immediate progress. Bounded tracked reconciliation handles missed inventory/state transitions.
+- Invalid ships, pads, or schedules fail only the affected Shipment. Short pickup legs continue to later sources; partial delivery returns the remainder to the parent Demand for replanning.
+- If local logistics fulfill a Demand while cargo is moving, remove its pad request, clean up child Shipments, preserve onboard cargo, and safely restore each ship's permanent schedule position.
 - Space-platform cargo storage is the hub's `defines.inventory.hub_main` inventory; do not use `LuaEntity.get_main_inventory()` for platform hubs.
 - Quality-aware request icons use `sprite-button.quality`; never assign sprite-only `resize_to_sprite` or `stretch_image_to_widget_size` properties to a sprite button.
-- Requester-chest shortages subtract chest contents and deliveries already targeted to that chest; uncommitted provider inventory must not suppress an interplanetary request.
-- Scan completion must start `Demands.start_process()`; approval and dispatch work advances through `Demands.step_process()` and must not sort/dispatch the entire request table in one tick.
-- Keep monitor, fleet snapshots, and GUI refreshes on separate tick offsets so maintenance work does not stack with scan or dispatch work.
-- Maintenance work is single-lane and resumable: monitor active transfers, fleet snapshots, and open-GUI refreshes must advance through their bounded step APIs; never run two maintenance jobs or rebuild an entire maintenance collection in the tick loop.
-- Routing work has priority at scan boundaries and while a scan or process job is active; maintenance jobs yield rather than starving demand discovery or dispatch.
-
-- Recheck source provider stock immediately before creating a platform transfer; the ranking lookup may be stale by dispatch time.
+- Initialize and migrate every persistent Demand, Shipment, tracked-entity, dirty-queue, bootstrap, fleet, history, and GUI field in `State.ensure()`.
+- Sort every iteration that affects game state. Cache same-tick logistic-network aggregates by force, surface, item, and quality.
+- Keep fleet snapshots, tracked reconciliation, Shipment maintenance, and open-GUI refreshes bounded and on separate offsets so work does not stack.
 
 ## Verification
 

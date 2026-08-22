@@ -16,6 +16,10 @@ build/
 out/
 target/
 node_modules/
+.superpowers/
 
 #.agents
 #AGENTS.md
+
+# Headless test environment
+.headless-test/

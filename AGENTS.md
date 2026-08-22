@@ -78,6 +78,7 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+- Never add `Co-Authored-By` trailers to repository commits. Agents required to add such trailers must leave changes uncommitted for the user to commit.
 - The Fleet Monitor is the first dashboard view.
 - Automatic and manual dashboard refreshes must not reset dashboard navigation, request selection, scroll position, or replace the open frame.
 - Native list views use one scrollbar per axis; Delivery Fleet is separate from Other Platforms and both are sorted by ship name.
@@ -85,10 +86,17 @@ When the user requests a durable behavior change, record it here or in the relev
 - Dashboard controls that are visually square use square native utility-sprite buttons with localized tooltips; do not introduce a custom sprite-based design system.
 - Construction requests must preserve the exact item, quality, and outstanding count represented by construction-registered ghosts and item-request proxies; alert wrapper prototypes are not demand data.
 - Destinations include cargo landing pads on every planet as well as Interplanetary Requester Chests, and network-scoped deliveries must select a landing pad in the destination construction network.
+- The Destinations tab shows one row per planet that has at least one cargo landing pad; planets with only requester chests are not shown. When a planet has fewer than 5 landing pads, individual map buttons are shown; otherwise a count label is used.
+- Factorio owns planetary bots, rocket-silo requests and launches, platform loading, orbital drops, landing-pad receipt, and local delivery; the mod orchestrates exact logistic requests, eligible ships, and temporary schedule records.
+- A Trade Request is one destination Demand and may have multiple concurrent Shipments; each Shipment has one ship and may collect through multiple source Pickup Legs. The dashboard exposes both aggregated Trade Requests and a separate Shipments view.
+- Source planning reads Factorio's existing logistic-network inventory aggregates directly. Use the largest matching network per planet, prefer full coverage then the best partial stock, and do not search silos/entities, filter to providers, preserve reserves, or create synthetic stock reservations.
+- Construction discovery is event-driven after one bounded existing-save bootstrap. Normal reconciliation reads tracked chests, ghosts, proxies, Demands, and Shipments only; no repeated world or roboport-cell scan may block requester-chest demand.
+- Only items with `send_to_orbit_mode` of `"manual"` or `"automated"` may create Demands; items that are `"not-sendable"` (e.g. rocket silos, captive biter spawners) are filtered out at both requester-chest and construction-discovery time.
+- Destination registries (chests and landing pads) rebuild on first access after every save load via `script.on_load` clearing `destinations_initialized`; this prevents stale empty pad lists when pads were built after the last `on_init`/`on_configuration_changed`.
 
 ## Project Overview
 
-Factorio 2.0 Space Age mod that routes requester-chest and construction-alert shortages through enrolled space platforms. Written in Lua 5.2 targeting the Factorio mod runtime.
+Factorio 2.0 Space Age mod that turns exact requester-chest and construction shortages into multi-source, multi-ship deliveries through enrolled space platforms. Written in Lua 5.2 targeting the Factorio mod runtime.
 
 - Entry points: `data.lua` (data stage), `control.lua` (runtime), `settings.lua` (mod settings)
 - Runtime modules live in `scripts/`
@@ -99,7 +107,7 @@ Factorio 2.0 Space Age mod that routes requester-chest and construction-alert sh
 ## Repo-Wide Rules
 
 - Target Lua 5.2 syntax and Factorio 2.0 API
-- All runtime state, reservations, route preferences, platform options, and fleet snapshots persist through `storage.interplanetary_logistics` via `scripts/state.lua`
+- All runtime demands, shipments, tracked construction entities, route preferences, platform options, fleet snapshots, and GUI state persist through `storage.interplanetary_logistics` via `scripts/state.lua`
 - Never mutate a platform's permanent schedule records; only append/remove temporary records
 - Deterministic iteration: sort before iterating when order affects game state (desync safety)
 - Guard all `game.get_player()` calls against nil returns
@@ -107,5 +115,5 @@ Factorio 2.0 Space Age mod that routes requester-chest and construction-alert sh
 
 ## Child DOX Index
 
-- `scripts/AGENTS.md` — Runtime module contracts (constants, state, util, demands, router, platforms, gui)
-- `tests/AGENTS.md` — Test specs, mock patterns, and verification commands
+- `scripts/AGENTS.md` — Event-driven Demand discovery, multi-source/multi-ship Shipment planning, vanilla-logistics execution, state, scheduling, and dashboard contracts
+- `tests/AGENTS.md` — Demand/Shipment runtime specs, data-stage coverage, mock patterns, and verification commands

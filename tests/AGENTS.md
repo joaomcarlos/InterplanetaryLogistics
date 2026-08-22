@@ -6,7 +6,7 @@ Plain Lua test suites validate runtime and data-stage logic without Factorio, us
 
 ## Ownership
 
-- `runtime_spec.lua` — Network-bounded construction demand and quality/count aggregation, delivery endpoint discovery, chest allocation, landing-pad network matching, commandeering, ready conditions, ETA/pinning, reservations, and transfer lifecycle
+- `runtime_spec.lua` — Event-driven chest/construction Demand discovery, one-time bootstrap, tracked reconciliation, exact quality/count aggregation, largest-network source snapshots, multi-source/multi-ship planning, landing-pad matching, temporary schedules, Shipment lifecycle, migration, and fleet behavior
 - `data_stage_spec.lua` — Data-stage prototypes for the chest, item, recipe, shortcut, custom input, and native GUI style system
 - `locale_spec.py` — Verifies every literal `il-gui.*` LocalisedString reference has an English locale definition
 
@@ -21,7 +21,11 @@ Plain Lua test suites validate runtime and data-stage logic without Factorio, us
 
 - Add a test for each runtime behavior or bug fix.
 - Keep tests independent and append each test call at the bottom.
-- Cover scan scheduler completion and bounded progress when changing demand scanning.
+- Prove requester-chest filter events create/update Demands independently of bootstrap, construction, reconciliation, and GUI work.
+- Cover one-time bootstrap completion plus event-driven ghost/proxy add, remove, revive, network reassociation, exact quality/count, and tracked reconciliation.
+- Source tests read Factorio-maintained logistic-network arrays, select the largest exact-quality network per planet, prefer full then best partial stock, and assert no silo/provider/reserve/reservation gate remains.
+- Cover deterministic splitting across multiple Shipments and multi-source Pickup Legs, scheduled-planet eligibility, cumulative hub requests, one Demand-owned pad request, partial/failure replanning, and legacy active-transfer migration.
+- Bound every queue/bootstrap/reconciliation step and verify one busy domain cannot block chest demand or Shipment progress.
 
 ## Verification
 
