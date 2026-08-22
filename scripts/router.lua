@@ -202,7 +202,7 @@ function Router.try_dispatch(request)
   clear_dispatch_candidate(request)
   local force = game.forces[request.force_index]
   if not force then
-    request.last_reason = "Force no longer exists"
+    request.last_reason = "Team no longer exists"
     return false
   end
   return Router.plan(request, force)

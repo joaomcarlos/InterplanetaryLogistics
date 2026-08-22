@@ -245,7 +245,7 @@ function Platforms.find_matching(request, force, source, destination)
     return a.capacity < b.capacity
   end)
   if matches[1] then return matches[1].platform end
-  if enrolled_count == 0 then return nil, "No platforms are enrolled for this force" end
+  if enrolled_count == 0 then return nil, "No platforms are enrolled" end
   if idle_count == 0 then return nil, "All enrolled platforms are currently delivering other requests" end
   if route_count == 0 then return nil, "No available enrolled platform has both " .. source .. " and " .. destination .. " in its schedule" end
   if capacity_count == 0 then return nil, "Available routed platforms do not have space for " .. request.amount .. " items" end
@@ -994,7 +994,7 @@ function Platforms.step_shipment_execution(budget)
           Platforms.cancel_shipment(shipment_id, reason or "execution failed")
         end
       else
-        Platforms.cancel_shipment(shipment_id, "force no longer available")
+        Platforms.cancel_shipment(shipment_id, "team no longer available")
       end
     end
     job.index = job.index + 1
