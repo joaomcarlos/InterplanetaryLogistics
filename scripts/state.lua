@@ -8,6 +8,11 @@ local chests = {}
 local landing_pads = {}
 local destinations_initialized = false
 
+-- Runtime-only flag to clear stale persisted jobs once per session.
+-- Jobs persisted from a previous session may have an incompatible schema
+-- after code changes, so we nil them out on first State.ensure() call.
+local jobs_cleared_this_session = false
+
 local terminal_shipment_statuses = {
   cancelled = true,
   completed = true,
@@ -159,13 +164,36 @@ function State.ensure()
   state.platform_options = state.platform_options or {}
   state.platform_status = state.platform_status or {}
   state.recent_returns = state.recent_returns or {}
-  state.scan_job = state.scan_job or nil
-  state.process_job = state.process_job or nil
-  state.monitor_job = state.monitor_job or nil
-  state.fleet_job = state.fleet_job or nil
-  state.gui_refresh_job = state.gui_refresh_job or nil
-  state.shipment_execution_job = state.shipment_execution_job or nil
-  state.shipment_maintenance_job = state.shipment_maintenance_job or nil
+  -- Clear stale persisted jobs and dirty queues once per session to avoid
+  -- schema mismatches after code changes (e.g. new fields added to scan_job).
+  if not jobs_cleared_this_session then
+    state.scan_job = nil
+    state.process_job = nil
+    state.monitor_job = nil
+    state.fleet_job = nil
+    state.gui_refresh_job = nil
+    state.shipment_execution_job = nil
+    state.shipment_maintenance_job = nil
+    state.bootstrap_job = nil
+    state.reconciliation_job = nil
+    state.chest_dirty = {}
+    state.construction_dirty = {}
+    state.shipment_dirty = {}
+    jobs_cleared_this_session = true
+  else
+    state.scan_job = state.scan_job or nil
+    state.process_job = state.process_job or nil
+    state.monitor_job = state.monitor_job or nil
+    state.fleet_job = state.fleet_job or nil
+    state.gui_refresh_job = state.gui_refresh_job or nil
+    state.shipment_execution_job = state.shipment_execution_job or nil
+    state.shipment_maintenance_job = state.shipment_maintenance_job or nil
+    state.bootstrap_job = state.bootstrap_job or nil
+    state.reconciliation_job = state.reconciliation_job or nil
+    state.chest_dirty = state.chest_dirty or {}
+    state.construction_dirty = state.construction_dirty or {}
+    state.shipment_dirty = state.shipment_dirty or {}
+  end
 
   if previous_schema < 3 then
     state.demands = state.requests or state.demands or {}
@@ -186,12 +214,7 @@ function State.ensure()
   state.pad_sections = state.pad_sections or {}
   state.next_shipment_id = next_id(state.shipments, state.next_shipment_id or 1)
   state.tracked_construction = state.tracked_construction or {}
-  state.chest_dirty = state.chest_dirty or {}
-  state.construction_dirty = state.construction_dirty or {}
-  state.shipment_dirty = state.shipment_dirty or {}
-  state.bootstrap_job = state.bootstrap_job or nil
   state.bootstrap_completed = state.bootstrap_completed or false
-  state.reconciliation_job = state.reconciliation_job or nil
 
   if previous_schema < 2 then
     for _, player_index in ipairs(sorted_keys(state.gui_tabs)) do
