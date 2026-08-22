@@ -70,8 +70,8 @@ local function test_chest_outstanding_demands()
   local State = require("scripts.state")
   local Demands = require("scripts.demands")
   local state = State.ensure()
-  state.chests[1] = true
-  state.chests[2] = true
+  State.register_chest(1)
+  State.register_chest(2)
   Demands.scan()
 
   local first = state.requests[state.request_by_key["chest|1|iron-plate|normal"]]
@@ -144,7 +144,7 @@ local function test_scan_scheduler_is_bounded()
   local State = require("scripts.state")
   local Demands = require("scripts.demands")
   local state = State.ensure()
-  state.chests[1] = true
+  State.register_chest(1)
   assert(Demands.start_scan(), "scheduler should accept a new scan")
   assert_equal(Demands.step_scan(1), false, "one budget unit should not complete all scan phases")
   assert(Demands.scan_active(), "scan should remain queued after one budget unit")
@@ -2014,12 +2014,10 @@ local function test_destination_registry_includes_landing_pads()
 
   local State = require("scripts.state")
   local state = State.ensure()
-  assert_equal(state.destinations_initialized, false, "old saves should request a one-time destination backfill")
   state = State.ensure_destinations()
-  assert(state.chests[10], "requester chests should remain registered destinations")
-  assert(state.landing_pads[20], "Nauvis cargo landing pads should be registered")
-  assert(state.landing_pads[30], "other-planet cargo landing pads should be registered")
-  assert_equal(state.destinations_initialized, true, "destination backfill should run only once")
+  assert(State.get_chests()[10], "requester chests should remain registered destinations")
+  assert(State.get_landing_pads()[20], "Nauvis cargo landing pads should be registered")
+  assert(State.get_landing_pads()[30], "other-planet cargo landing pads should be registered")
 end
 
 local function test_destination_grouping_one_row_per_planet()
@@ -2107,7 +2105,7 @@ end
 local function test_chest_filter_event_creates_demand_without_scan()
   local State, Demands, state, chest = make_chest_dirty_env()
   local entity = chest(1)
-  state.chests[1] = true
+  State.register_chest(1)
   Demands.mark_chest_dirty(1)
   assert(Demands.chest_dirty_active(), "chest dirty queue should be active after mark")
   while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
@@ -2123,7 +2121,7 @@ end
 local function test_chest_dirty_independent_of_scan_job()
   local State, Demands, state, chest = make_chest_dirty_env()
   local entity = chest(1)
-  state.chests[1] = true
+  State.register_chest(1)
   assert(Demands.start_scan(), "scan should start for reconciliation")
   assert(Demands.scan_active(), "scan job should be active")
   Demands.mark_chest_dirty(1)
@@ -2140,7 +2138,7 @@ local function test_retire_chest_removes_all_demands()
     {type = "item", name = "iron-plate", quality = "normal", count = 100},
     {type = "item", name = "copper-plate", quality = "normal", count = 50}
   })
-  state.chests[1] = true
+  State.register_chest(1)
   Demands.mark_chest_dirty(1)
   while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
   assert(state.demand_by_key["chest|1|iron-plate|normal"], "iron demand should exist before retire")
@@ -2201,7 +2199,7 @@ end
 local function test_chest_filter_zero_count_retires_demand()
   local State, Demands, state, chest = make_chest_dirty_env()
   local entity, point = chest(1)
-  state.chests[1] = true
+  State.register_chest(1)
   Demands.mark_chest_dirty(1)
   while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
   assert(state.demand_by_key["chest|1|iron-plate|normal"], "demand should exist before zero-count update")
@@ -2218,7 +2216,7 @@ local function test_chest_dirty_bounded_processing()
   local State, Demands, state, chest = make_chest_dirty_env()
   for unit = 1, 10 do
     chest(unit)
-    state.chests[unit] = true
+    State.register_chest(unit)
     Demands.mark_chest_dirty(unit)
   end
   assert(Demands.chest_dirty_active(), "queue should be active with 10 dirty chests")

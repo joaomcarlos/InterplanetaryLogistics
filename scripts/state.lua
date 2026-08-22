@@ -2,10 +2,11 @@ local Constants = require("scripts.constants")
 
 local State = {}
 
--- Runtime-only flag (not persisted) to force one destination rebuild per session.
--- This catches pads that were built before the mod was installed or that exist
--- in saves from older mod versions without breaking save/load stability.
-local destinations_verified_this_session = false
+-- Runtime-only destination registries (not persisted).
+-- Rebuilt from world entities at game start and maintained via build/remove events.
+local chests = {}
+local landing_pads = {}
+local destinations_initialized = false
 
 local terminal_shipment_statuses = {
   cancelled = true,
@@ -147,9 +148,6 @@ function State.ensure()
     previous_schema = Constants.schema_version
   end
 
-  state.chests = state.chests or {}
-  state.landing_pads = state.landing_pads or {}
-  state.destinations_initialized = state.destinations_initialized or false
   state.suppressions = state.suppressions or {}
   state.enrolled = state.enrolled or {}
   state.active_transfers = state.active_transfers or {}
@@ -330,32 +328,52 @@ function State.get()
 end
 
 function State.rebuild_destinations()
-  local state = State.ensure()
-  state.chests = {}
-  state.landing_pads = {}
+  chests = {}
+  landing_pads = {}
   for _, surface in pairs(game.surfaces) do
     for _, chest in pairs(surface.find_entities_filtered({name = Constants.chest_name})) do
       if chest.valid and chest.unit_number then
-        state.chests[chest.unit_number] = true
+        chests[chest.unit_number] = true
       end
     end
     for _, pad in pairs(surface.find_entities_filtered({type = "cargo-landing-pad"})) do
       if pad.valid and pad.unit_number then
-        state.landing_pads[pad.unit_number] = true
+        landing_pads[pad.unit_number] = true
       end
     end
   end
-  state.destinations_initialized = true
+  destinations_initialized = true
 end
 
 function State.ensure_destinations()
-  local state = State.ensure()
-  if not state.destinations_initialized or not destinations_verified_this_session then
+  if not destinations_initialized then
     State.rebuild_destinations()
-    state = State.ensure()
-    destinations_verified_this_session = true
   end
-  return state
+  return State.ensure()
+end
+
+function State.get_chests()
+  return chests
+end
+
+function State.get_landing_pads()
+  return landing_pads
+end
+
+function State.register_chest(unit_number)
+  chests[unit_number] = true
+end
+
+function State.unregister_chest(unit_number)
+  chests[unit_number] = nil
+end
+
+function State.register_landing_pad(unit_number)
+  landing_pads[unit_number] = true
+end
+
+function State.unregister_landing_pad(unit_number)
+  landing_pads[unit_number] = nil
 end
 
 function State.add_history(request, status, reason)

@@ -653,8 +653,8 @@ end
 
 local function destination_list(player)
   local pads = {}
-  local state = State.ensure_destinations()
-  for unit_number in pairs(state.landing_pads) do
+  State.ensure_destinations()
+  for unit_number in pairs(State.get_landing_pads()) do
     local entity = game.get_entity_by_unit_number(unit_number)
     if entity and entity.valid and entity.force and entity.force.index == player.force.index then
       pads[#pads + 1] = entity

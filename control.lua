@@ -20,11 +20,10 @@ end
 local function register_destination(entity)
   local kind = destination_kind(entity)
   if not kind or not entity.unit_number then return end
-  local state = State.ensure()
   if kind == "chest" then
-    state.chests[entity.unit_number] = true
+    State.register_chest(entity.unit_number)
   else
-    state.landing_pads[entity.unit_number] = true
+    State.register_landing_pad(entity.unit_number)
   end
 end
 
@@ -39,11 +38,10 @@ end
 
 local function unregister_destination(entity, kind)
   if not entity or not entity.unit_number or not kind then return end
-  local state = State.ensure()
   if kind == "chest" then
-    state.chests[entity.unit_number] = nil
+    State.unregister_chest(entity.unit_number)
   else
-    state.landing_pads[entity.unit_number] = nil
+    State.unregister_landing_pad(entity.unit_number)
   end
 end
 
@@ -426,8 +424,8 @@ remote.add_interface("interplanetary_logistics", {
     lines[#lines + 1] = "demands: " .. tostring(state.demands and table_size(state.demands) or 0)
     lines[#lines + 1] = "shipments: " .. tostring(state.shipments and table_size(state.shipments) or 0)
     lines[#lines + 1] = "enrolled[1]: " .. tostring(state.enrolled and state.enrolled[1] and table_size(state.enrolled[1]) or 0)
-    lines[#lines + 1] = "chests: " .. tostring(state.chests and table_size(state.chests) or 0)
-    lines[#lines + 1] = "pads: " .. tostring(state.landing_pads and table_size(state.landing_pads) or 0)
+    lines[#lines + 1] = "chests: " .. tostring(table_size(State.get_chests()))
+    lines[#lines + 1] = "pads: " .. tostring(table_size(State.get_landing_pads()))
     if state.demands then
       for id, d in pairs(state.demands) do
         lines[#lines + 1] = string.format("  Demand %s: item=%s x%s status=%s dest=%s obs=%s active=%s unplanned=%s",
@@ -643,7 +641,6 @@ remote.add_interface("interplanetary_logistics", {
   end,
   rebuild_destinations = function()
     State.rebuild_destinations()
-    local state = State.ensure()
-    return "Rebuilt: chests=" .. tostring(table_size(state.chests)) .. " pads=" .. tostring(table_size(state.landing_pads))
+    return "Rebuilt: chests=" .. tostring(table_size(State.get_chests())) .. " pads=" .. tostring(table_size(State.get_landing_pads()))
   end
 })

@@ -464,11 +464,11 @@ local function process_single_chest(unit_number)
   local state = State.ensure()
   local chest = game.get_entity_by_unit_number(unit_number)
   if not chest or not chest.valid or chest.name ~= Constants.chest_name then
-    state.chests[unit_number] = nil
+    State.unregister_chest(unit_number)
     Demands.retire_chest(unit_number)
     return
   end
-  state.chests[unit_number] = true
+  State.register_chest(unit_number)
   local configured = {}
   local needed = {}
   local groups = {}
@@ -955,12 +955,12 @@ function Demands.scan()
   local configured = {}
   local needed = {}
   local groups = {}
-  for unit_number in pairs(state.chests) do
+  for unit_number in pairs(State.get_chests()) do
     local chest = game.get_entity_by_unit_number(unit_number)
     if chest and chest.valid and chest.name == Constants.chest_name then
       collect_chest(chest, configured, groups)
     else
-      state.chests[unit_number] = nil
+      State.unregister_chest(unit_number)
     end
   end
   publish_chest_groups(groups, needed)
@@ -1000,7 +1000,7 @@ function Demands.start_scan()
   end)
   state.scan_job = {
     phase = "chests",
-    chest_ids = sorted_scan_chests(state.chests),
+    chest_ids = sorted_scan_chests(State.get_chests()),
     chest_index = 1,
     configured = {},
     needed = {},
@@ -1039,7 +1039,7 @@ function Demands.step_scan(budget)
         if chest and chest.valid and chest.name == Constants.chest_name then
           collect_chest(chest, job.configured, job.groups)
         else
-          state.chests[unit_number] = nil
+          State.unregister_chest(unit_number)
         end
         job.chest_index = job.chest_index + 1
         processed = processed + 1

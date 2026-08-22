@@ -11,7 +11,7 @@ Each module owns a single responsibility. Calls flow from event-driven demand di
 ## Local Contracts
 
 - `constants.lua` — Entity names, reconciliation/execution timeouts, bounded-work budgets, active statuses, schema version, and history limit
-- `state.lua` — Persistent Demands, Shipments, Demand-owned pad sections, tracked construction entities, dirty queues, bootstrap state, destinations, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration
+- `state.lua` — Persistent Demands, Shipments, Demand-owned pad sections, tracked construction entities, dirty queues, bootstrap state, route preferences, platform options, fleet snapshots, return cargo, GUI state, history, and schema migration. Destination registries (chests, landing pads) are runtime-only, not persisted.
 - `util.lua` — Pure item, signal, surface, route, platform, destination grouping, formatting, sorting, GPS, ghost, and sprite helpers
 - `demands.lua` — Event-driven chest/construction discovery, tracked reconciliation, Demand lifecycle, priority, approval, suppression, and retirement
 - `router.lua` — Largest-network source snapshots, deterministic multi-source/multi-ship planning, schedule eligibility, and Shipment creation
@@ -32,7 +32,7 @@ Each module owns a single responsibility. Calls flow from event-driven demand di
 - Centralize width budgets in `layout()` so the navigation rail, list columns, scroll bar, and detail panels fit inside the frame at supported UI scales.
 - Delivery Fleet and Other Platforms are separate sections sorted by platform name. Demands are ordered by priority, workflow state, then id; Shipments use deterministic status and id ordering.
 - Enrollment clicks and structural/value refreshes update the smallest existing subtree so dashboard navigation and scroll position remain stable.
-- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once. A runtime-only flag in `state.lua` forces one rebuild per session without modifying `storage` in `on_load`.
+- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place. Destination registries are runtime-only locals in `state.lua`, rebuilt from world entities at game start and maintained via events; they are never persisted to `storage`.
 - The Destinations view shows one row per planet with at least one cargo landing pad; planets with only requester chests are hidden. Each row shows map buttons for individual pads when fewer than 5, or a count label when 5 or more.
 - Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
 - A Demand is an exact destination need keyed by origin identity, destination surface/network, item, and quality. It owns observed shortage, active-shipment quantity, unplanned quantity, approval, priority, denial, and suppression.
