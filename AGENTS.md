@@ -92,7 +92,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - Source planning reads Factorio's existing logistic-network inventory aggregates directly. Use the largest matching network per planet, prefer full coverage then the best partial stock, and do not search silos/entities, filter to providers, preserve reserves, or create synthetic stock reservations.
 - Construction discovery is event-driven after one bounded existing-save bootstrap. Normal reconciliation reads tracked chests, ghosts, proxies, Demands, and Shipments only; no repeated world or roboport-cell scan may block requester-chest demand.
 - Only items with `send_to_orbit_mode` of `"manual"` or `"automated"` may create Demands; items that are `"not-sendable"` (e.g. rocket silos, captive biter spawners) are filtered out at both requester-chest and construction-discovery time.
-- Destination registries (chests and landing pads) rebuild on first access after every save load via `script.on_load` clearing `destinations_initialized`; this prevents stale empty pad lists when pads were built after the last `on_init`/`on_configuration_changed`.
+- Destination registries (chests and landing pads) rebuild on first access each session via a runtime-only flag in `state.lua`; this catches pads from older saves without modifying `storage` in `on_load` (which would break save/load stability).
 
 ## Project Overview
 

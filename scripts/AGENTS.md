@@ -32,7 +32,7 @@ Each module owns a single responsibility. Calls flow from event-driven demand di
 - Centralize width budgets in `layout()` so the navigation rail, list columns, scroll bar, and detail panels fit inside the frame at supported UI scales.
 - Delivery Fleet and Other Platforms are separate sections sorted by platform name. Demands are ordered by priority, workflow state, then id; Shipments use deterministic status and id ordering.
 - Enrollment clicks and structural/value refreshes update the smallest existing subtree so dashboard navigation and scroll position remain stable.
-- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once. `script.on_load` clears `destinations_initialized` so `ensure_destinations` rebuilds on first access after every save load.
+- Requester-chest and cargo-landing-pad build/removal events refresh the open Destinations subtree and summary in place; existing saves lazily backfill both endpoint types once. A runtime-only flag in `state.lua` forces one rebuild per session without modifying `storage` in `on_load`.
 - The Destinations view shows one row per planet with at least one cargo landing pad; planets with only requester chests are hidden. Each row shows map buttons for individual pads when fewer than 5, or a count label when 5 or more.
 - Every player-facing GUI caption and tooltip uses a defined `il-gui.*` LocalisedString; validate with `python tests/locale_spec.py`.
 - A Demand is an exact destination need keyed by origin identity, destination surface/network, item, and quality. It owns observed shortage, active-shipment quantity, unplanned quantity, approval, priority, denial, and suppression.

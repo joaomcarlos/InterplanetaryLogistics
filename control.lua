@@ -311,15 +311,6 @@ end
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)
-script.on_load(function()
-  -- Clear destinations_initialized so ensure_destinations rebuilds on first
-  -- access after a save load. on_init/on_configuration_changed only fire on
-  -- new saves or mod version changes; normal save loads skip them, which can
-  -- leave landing_pads stale if pads were built after the last rebuild.
-  if storage.interplanetary_logistics then
-    storage.interplanetary_logistics.destinations_initialized = false
-  end
-end)
 
 script.on_event(defines.events.on_built_entity, on_built)
 script.on_event(defines.events.on_robot_built_entity, on_built)

@@ -2,6 +2,11 @@ local Constants = require("scripts.constants")
 
 local State = {}
 
+-- Runtime-only flag (not persisted) to force one destination rebuild per session.
+-- This catches pads that were built before the mod was installed or that exist
+-- in saves from older mod versions without breaking save/load stability.
+local destinations_verified_this_session = false
+
 local terminal_shipment_statuses = {
   cancelled = true,
   completed = true,
@@ -345,9 +350,10 @@ end
 
 function State.ensure_destinations()
   local state = State.ensure()
-  if not state.destinations_initialized then
+  if not state.destinations_initialized or not destinations_verified_this_session then
     State.rebuild_destinations()
     state = State.ensure()
+    destinations_verified_this_session = true
   end
   return state
 end
