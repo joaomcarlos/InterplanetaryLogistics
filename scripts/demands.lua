@@ -1237,4 +1237,31 @@ function Demands.set_priority(request_id, priority)
   return true
 end
 
+-- Fully remove a Demand from state. Active demands are cancelled first so
+-- active transfers, child shipments, pad sections, and temporary schedule
+-- records are cleaned up; terminal demands are deleted directly.
+function Demands.remove(request_id, reason)
+  local state = State.ensure()
+  local request = state.demands[request_id]
+  if not request then return end
+  if Constants.active_statuses[request.status] then
+    Platforms.cancel(request, reason or "cleared by player")
+  end
+  local index = state.shipments_by_demand[request_id]
+  if index then
+    local ids = {}
+    for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
+    table.sort(ids)
+    for _, shipment_id in ipairs(ids) do
+      Platforms.remove_shipment(shipment_id, reason or "cleared by player")
+    end
+  end
+  Platforms.remove_pad_section(request_id)
+  state.demands[request_id] = nil
+  if request.key then
+    state.request_by_key[request.key] = nil
+    state.suppressions[request.key] = nil
+  end
+end
+
 return Demands

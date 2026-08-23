@@ -158,6 +158,14 @@ function State.ensure()
   state.active_transfers = state.active_transfers or {}
   state.platform_transfers = state.platform_transfers or {}
   state.history = state.history or {}
+  state.next_history_seq = state.next_history_seq or 1
+  -- Backfill seq on legacy history entries so individual clear buttons work
+  for _, entry in ipairs(state.history) do
+    if not entry.seq then
+      entry.seq = state.next_history_seq
+      state.next_history_seq = state.next_history_seq + 1
+    end
+  end
   state.source_metrics = state.source_metrics or {}
   state.gui_tabs = state.gui_tabs or {}
   state.route_preferences = state.route_preferences or {}
@@ -361,7 +369,7 @@ function State.rebuild_destinations()
     end
     for _, pad in pairs(surface.find_entities_filtered({type = "cargo-landing-pad"})) do
       if pad.valid and pad.unit_number then
-        landing_pads[pad.unit_number] = true
+        landing_pads[pad.unit_number] = pad
       end
     end
   end
@@ -391,8 +399,8 @@ function State.unregister_chest(unit_number)
   chests[unit_number] = nil
 end
 
-function State.register_landing_pad(unit_number)
-  landing_pads[unit_number] = true
+function State.register_landing_pad(unit_number, entity)
+  landing_pads[unit_number] = entity
 end
 
 function State.unregister_landing_pad(unit_number)
@@ -402,6 +410,7 @@ end
 function State.add_history(request, status, reason)
   local state = State.ensure()
   state.history[#state.history + 1] = {
+    seq = state.next_history_seq,
     id = request.id,
     item = request.item,
     quality = request.quality,
@@ -413,8 +422,36 @@ function State.add_history(request, status, reason)
     reason = reason,
     tick = game.tick
   }
+  state.next_history_seq = state.next_history_seq + 1
   while #state.history > Constants.history_limit do
     table.remove(state.history, 1)
+  end
+end
+
+function State.remove_history_entry(seq)
+  if not seq then return end
+  local state = State.ensure()
+  for index, entry in ipairs(state.history) do
+    if entry.seq == seq then
+      table.remove(state.history, index)
+      return
+    end
+  end
+end
+
+function State.clear_history()
+  local state = State.ensure()
+  state.history = {}
+end
+
+function State.delete_shipment(shipment_id)
+  local state = State.ensure()
+  local shipment = state.shipments[shipment_id]
+  if not shipment then return end
+  state.shipments[shipment_id] = nil
+  State.remove_shipment_index(shipment.demand_id, shipment_id)
+  if state.platform_shipments[shipment.platform_index] == shipment_id then
+    state.platform_shipments[shipment.platform_index] = nil
   end
 end
 

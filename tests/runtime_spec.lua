@@ -2016,8 +2016,8 @@ local function test_destination_registry_includes_landing_pads()
   local state = State.ensure()
   state = State.ensure_destinations()
   assert(State.get_chests()[10], "requester chests should remain registered destinations")
-  assert(State.get_landing_pads()[20], "Nauvis cargo landing pads should be registered")
-  assert(State.get_landing_pads()[30], "other-planet cargo landing pads should be registered")
+  assert(State.get_landing_pads()[20] == nauvis_pad, "Nauvis cargo landing pads should store entity reference")
+  assert(State.get_landing_pads()[30] == vulcanus_pad, "other-planet cargo landing pads should store entity reference")
 end
 
 local function test_destination_grouping_one_row_per_planet()
@@ -2053,6 +2053,56 @@ local function test_destination_grouping_one_row_per_planet()
   assert_equal(#grouped[2].pads, 2, "nauvis should group its two pads")
   assert_equal(grouped[3].planet, "vulcanus", "vulcanus should be third alphabetically")
   assert_equal(#grouped[3].pads, 1, "vulcanus should have one pad")
+end
+
+local function test_destination_list_works_without_get_by_unit_number()
+  reset_modules()
+  storage = {}
+
+  local force = {valid = true, index = 1}
+  local player = {valid = true, index = 1, force = force}
+
+  local function pad(unit_number, planet_name)
+    return {
+      valid = true, unit_number = unit_number, force = force,
+      surface = {valid = true, name = planet_name, planet = {name = planet_name}},
+      position = {x = unit_number, y = 0}
+    }
+  end
+
+  local nauvis_pad = pad(20, "nauvis")
+  local vulcanus_pad = pad(30, "vulcanus")
+  local function surface(pads)
+    return {
+      find_entities_filtered = function(filter)
+        if filter.type == "cargo-landing-pad" then return pads end
+        return {}
+      end
+    }
+  end
+
+  game = {
+    surfaces = {surface({nauvis_pad}), surface({vulcanus_pad})},
+    get_entity_by_unit_number = function() return nil end
+  }
+
+  local State = require("scripts.state")
+  State.ensure_destinations()
+
+  local Util = require("scripts.util")
+  local pads = {}
+  for _, entity in pairs(State.get_landing_pads()) do
+    if entity and entity.valid and entity.force and entity.force.index == player.force.index then
+      pads[#pads + 1] = entity
+    end
+  end
+  local grouped = Util.group_destinations_by_planet(pads)
+
+  assert_equal(#grouped, 2, "destination_list should find pads even when get_entity_by_unit_number returns nil")
+  assert_equal(grouped[1].planet, "nauvis", "nauvis should be first alphabetically")
+  assert_equal(#grouped[1].pads, 1, "nauvis should have one pad")
+  assert_equal(grouped[2].planet, "vulcanus", "vulcanus should be second alphabetically")
+  assert_equal(#grouped[2].pads, 1, "vulcanus should have one pad")
 end
 
 local function make_chest_dirty_env()
@@ -2243,6 +2293,7 @@ test_bounded_scan_skips_invalidated_logistic_cells()
 test_bounded_scan_skips_invalidated_logistic_networks()
 test_destination_registry_includes_landing_pads()
 test_destination_grouping_one_row_per_planet()
+test_destination_list_works_without_get_by_unit_number()
 test_chest_outstanding_demands()
 test_scan_scheduler_is_bounded()
 test_scheduler_prioritizes_routing_over_fleet_refresh()
@@ -2274,6 +2325,75 @@ test_chest_filter_zero_count_retires_demand()
 test_chest_dirty_bounded_processing()
 
 -- ---------------------------------------------------------------------------
+-- Save-load regression: runtime destination registries must be rebuilt before
+-- the periodic scan reads them, otherwise loaded saves detect zero chest
+-- Demands. on_init/on_configuration_changed do not fire on a normal save load,
+-- and game is not accessible in on_load, so control.lua's on_tick calls
+-- State.ensure_destinations() once per session to repopulate the chest/landing-
+-- pad locals from world entities.
+-- ---------------------------------------------------------------------------
+
+local function test_scan_finds_chests_after_destination_rebuild_on_load()
+  reset_modules()
+  storage = {}
+  settings = {global = {["il-auto-approve-seconds"] = {value = 30}}}
+  defines = {alert_type = {no_material_for_construction = 1}}
+  prototypes = {item = {["iron-plate"] = {send_to_orbit_mode = "automated"}}}
+
+  local network = {valid = true, network_id = 7, get_item_count = function() return 0 end}
+  local chest_entity
+  local surface = {
+    valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"},
+    find_entities_filtered = function(filter)
+      if filter.name == "interplanetary-requester-chest" then return {chest_entity} end
+      return {}
+    end
+  }
+  local force = {valid = true, index = 1, logistic_networks = {[surface.name] = {network}}}
+  chest_entity = {
+    valid = true, name = "interplanetary-requester-chest", unit_number = 42,
+    force = force, surface = surface, position = {x = 0, y = 0},
+    get_requester_point = function()
+      return {logistic_network = network, filters = {{name = "iron-plate", count = 100, quality = "normal"}}, targeted_items_deliver = {}}
+    end,
+    get_item_count = function() return 0 end
+  }
+  game = {
+    tick = 0, forces = {force}, surfaces = {surface},
+    get_entity_by_unit_number = function() return chest_entity end,
+    get_surface = function() return surface end
+  }
+
+  -- Simulate a save load: modules are reloaded so the runtime-only `chests`
+  -- local starts empty and `destinations_initialized` is false. Do NOT call
+  -- State.register_chest (no build event fires on a load).
+  local State = require("scripts.state")
+  local Demands = require("scripts.demands")
+  State.ensure()
+  assert_equal(next(State.get_chests()), nil, "runtime chest registry must start empty after a load")
+
+  -- control.lua's on_tick rebuilds destinations from world entities on the
+  -- first tick after load. A scan before that rebuild would find nothing.
+  assert_equal(next(State.get_chests()), nil, "registry must still be empty before the on_tick rebuild")
+  State.ensure_destinations()
+  assert(State.get_chests()[42], "ensure_destinations must rebuild the chest registry from world entities after a load")
+
+  -- Now the periodic scan must detect the requester-chest shortage.
+  Demands.scan()
+  local state = State.ensure()
+  local demand = state.requests[state.request_by_key["chest|42|iron-plate|normal"]]
+  assert(demand, "scan must detect the requester-chest shortage after the on-load destination rebuild")
+  assert_equal(demand.amount, 100, "rebuilt scan must publish the full observed shortage")
+
+  -- A subsequent scan must update shortage against current chest contents.
+  chest_entity.get_item_count = function() return 40 end
+  Demands.scan()
+  assert_equal(state.requests[state.request_by_key["chest|42|iron-plate|normal"]].amount, 60, "subsequent scans must update shortage against current chest contents")
+end
+
+test_scan_finds_chests_after_destination_rebuild_on_load()
+
+-- ---------------------------------------------------------------------------
 -- Event-driven construction tracking tests
 -- ---------------------------------------------------------------------------
 
@@ -2291,6 +2411,7 @@ local function make_construction_env()
     ["iron-plate"] = {send_to_orbit_mode = "automated"},
     ["rocket-silo"] = {send_to_orbit_mode = "not-sendable"},
     ["captive-biter-spawner"] = {send_to_orbit_mode = "not-sendable"},
+    ["cliff-explosives"] = {send_to_orbit_mode = "not-sendable"},
     concrete = {send_to_orbit_mode = "automated"},
     ["steel-chest"] = {send_to_orbit_mode = "automated"},
     ["efficiency-module-3"] = {send_to_orbit_mode = "automated"},
@@ -3935,31 +4056,128 @@ test_refresh_shipments_structure_updates_rows()
 test_refresh_summaries_includes_shipment_metrics()
 
 -- ---------------------------------------------------------------------------
--- Non-shippable item filter tests
+-- Clear (remove stale entry) button tests
 -- ---------------------------------------------------------------------------
 
-local function test_non_shippable_items_filtered_from_construction()
+local function test_history_clear_all_button_present()
+  local env = make_gui_env()
+  local demand = env.make_demand(1)
+  env.State.add_history(demand, "completed", "done")
+  env.state.gui_tabs[1] = {view = "history"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local btn = env.find_element(frame, "il-history-clear-all")
+  assert(btn, "history view should have a clear-all button")
+  env.State.clear_history()
+  assert_equal(#env.state.history, 0, "clear_history should empty the history log")
+end
+
+local function test_history_per_row_clear_button_removes_entry()
+  local env = make_gui_env()
+  local demand = env.make_demand(1)
+  env.State.add_history(demand, "completed", "done")
+  env.State.add_history(demand, "failed", "boom")
+  env.state.gui_tabs[1] = {view = "history"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local first_seq = env.state.history[1].seq
+  local btn = env.find_element(frame, "il-history-clear-" .. tostring(first_seq))
+  assert(btn, "each history row should have a per-row clear button")
+  env.State.remove_history_entry(first_seq)
+  assert_equal(#env.state.history, 1, "remove_history_entry should remove one entry")
+  assert(env.state.history[1].seq ~= first_seq, "removed entry should no longer be present")
+end
+
+local function test_request_clear_button_removes_demand()
+  local env = make_gui_env()
+  env.make_demand(1)
+  env.make_shipment(1, 1, "Courier", "completed", 50)
+  env.state.gui_tabs[1] = {view = "requests"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local btn = env.find_element(frame, "il-request-clear-1")
+  assert(btn, "each trade request row should have a clear button")
+  local Demands = require("scripts.demands")
+  Demands.remove(1, "cleared by player")
+  assert_equal(env.state.demands[1], nil, "Demands.remove should delete the demand")
+  assert_equal(env.state.demand_by_key["demand-1"], nil, "Demands.remove should clear the key index")
+  assert_equal(env.state.shipments[1], nil, "Demands.remove should remove child shipments")
+end
+
+local function test_shipment_clear_button_removes_terminal_shipment()
+  local env = make_gui_env()
+  env.make_demand(1)
+  env.make_shipment(1, 1, "Courier", "completed", 50)
+  env.state.gui_tabs[1] = {view = "shipments"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local btn = env.find_element(frame, "il-shipment-clear-1")
+  assert(btn, "each shipment row should have a clear button")
+  local Platforms = require("scripts.platforms")
+  Platforms.remove_shipment(1, "cleared by player")
+  assert_equal(env.state.shipments[1], nil, "remove_shipment should delete a terminal shipment")
+end
+
+local function test_shipments_clear_all_button_present()
+  local env = make_gui_env()
+  env.make_demand(1)
+  env.make_shipment(1, 1, "Alpha", "loading", 50)
+  env.state.gui_tabs[1] = {view = "shipments"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local btn = env.find_element(frame, "il-shipments-clear-all")
+  assert(btn, "shipments view should have a clear-all button")
+end
+
+local function test_requests_clear_all_button_present()
+  local env = make_gui_env()
+  env.make_demand(1)
+  env.state.gui_tabs[1] = {view = "requests"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local btn = env.find_element(frame, "il-requests-clear-all")
+  assert(btn, "trade requests view should have a clear-all button")
+end
+
+test_history_clear_all_button_present()
+test_history_per_row_clear_button_removes_entry()
+test_request_clear_button_removes_demand()
+test_shipment_clear_button_removes_terminal_shipment()
+test_shipments_clear_all_button_present()
+test_requests_clear_all_button_present()
+
+-- ---------------------------------------------------------------------------
+-- Blocklist item filter tests
+-- ---------------------------------------------------------------------------
+
+local function test_blocklist_items_filtered_from_construction()
   local State, Demands, state, ghost, proxy = make_construction_env()
-  -- Ghost for a non-shippable item (rocket-silo)
+  -- Ghost for a blocklisted item (rocket-silo)
   local rs = ghost("rocket-silo", "rocket-silo", "normal")
   Demands.track_construction(rs)
-  -- Proxy for a non-shippable item (captive-biter-spawner)
+  -- Proxy for a blocklisted item (captive-biter-spawner)
   local bs = proxy("captive-biter-spawner", 7, "normal")
   Demands.track_construction(bs)
   -- Ghost for a shippable item (iron-plate)
   local ip = ghost("iron-plate", "iron-plate", "normal")
   Demands.track_construction(ip)
+  -- Ghost for a not-sendable but NOT blocklisted item (cliff-explosives)
+  local ce = ghost("cliff-explosives", "cliff-explosives", "normal")
+  Demands.track_construction(ce)
   while Demands.construction_dirty_active() do Demands.step_construction_dirty(16) end
-  -- Non-shippable items should NOT create demands
+  -- Blocklisted items should NOT create demands
   local rs_key = table.concat({"alert", 1, 1, 101, "rocket-silo", "normal"}, "|")
-  assert(state.demand_by_key[rs_key] == nil, "rocket-silo should be filtered out (not-sendable)")
+  assert(state.demand_by_key[rs_key] == nil, "rocket-silo should be filtered out (blocklisted)")
   local bs_key = table.concat({"alert", 1, 1, 101, "captive-biter-spawner", "normal"}, "|")
-  assert(state.demand_by_key[bs_key] == nil, "captive-biter-spawner should be filtered out (not-sendable)")
+  assert(state.demand_by_key[bs_key] == nil, "captive-biter-spawner should be filtered out (blocklisted)")
   -- Shippable item should create a demand
   local ip_key = table.concat({"alert", 1, 1, 101, "iron-plate", "normal"}, "|")
-  assert(state.demand_by_key[ip_key], "iron-plate should create a demand (automated)")
+  assert(state.demand_by_key[ip_key], "iron-plate should create a demand")
+  -- Not-sendable but not blocklisted item should also create a demand
+  local ce_key = table.concat({"alert", 1, 1, 101, "cliff-explosives", "normal"}, "|")
+  assert(state.demand_by_key[ce_key], "cliff-explosives should create a demand (not-sendable but not blocklisted)")
 end
 
-test_non_shippable_items_filtered_from_construction()
+test_blocklist_items_filtered_from_construction()
 
 print("runtime_spec: OK")

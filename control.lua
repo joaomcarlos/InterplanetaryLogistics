@@ -23,7 +23,7 @@ local function register_destination(entity)
   if kind == "chest" then
     State.register_chest(entity.unit_number)
   else
-    State.register_landing_pad(entity.unit_number)
+    State.register_landing_pad(entity.unit_number, entity)
   end
 end
 
@@ -243,6 +243,57 @@ local function on_gui_click(event)
     return
   end
 
+  if element.name == "il-shipments-clear-all" then
+    local state = State.ensure()
+    local ids = {}
+    for shipment_id, shipment in pairs(state.shipments or {}) do
+      if shipment.force_index == player.force.index then ids[#ids + 1] = shipment_id end
+    end
+    table.sort(ids)
+    for _, shipment_id in ipairs(ids) do Platforms.remove_shipment(shipment_id, "cleared by player") end
+    Gui.refresh_shipments_structure(player)
+    return
+  end
+
+  local clear_shipment_id = parse_id(element.name or "", "il%-shipment%-clear%-")
+  if clear_shipment_id then
+    Platforms.remove_shipment(clear_shipment_id, "cleared by player")
+    Gui.refresh_shipments_structure(player)
+    return
+  end
+
+  if element.name == "il-requests-clear-all" then
+    local state = State.ensure()
+    local ids = {}
+    for demand_id, demand in pairs(state.demands or {}) do
+      if demand.force_index == player.force.index then ids[#ids + 1] = demand_id end
+    end
+    table.sort(ids)
+    for _, demand_id in ipairs(ids) do Demands.remove(demand_id, "cleared by player") end
+    Gui.refresh_request_structure(player)
+    return
+  end
+
+  local clear_request_id = parse_id(element.name or "", "il%-request%-clear%-")
+  if clear_request_id then
+    Demands.remove(clear_request_id, "cleared by player")
+    Gui.refresh_request_structure(player)
+    return
+  end
+
+  if element.name == "il-history-clear-all" then
+    State.clear_history()
+    Gui.refresh_history_structure(player)
+    return
+  end
+
+  local clear_history_seq = parse_id(element.name or "", "il%-history%-clear%-")
+  if clear_history_seq then
+    State.remove_history_entry(clear_history_seq)
+    Gui.refresh_history_structure(player)
+    return
+  end
+
   local id = parse_id(element.name, "il%-approve%-")
   if id then
     Demands.approve(id, event.player_index, false)
@@ -370,6 +421,11 @@ script.on_event(defines.events.on_gui_closed, function(event)
 end)
 
 script.on_event(defines.events.on_tick, function(event)
+  -- Rebuild runtime-only destination registries once per session. on_init and
+  -- on_configuration_changed only fire on new saves or mod version changes; a
+  -- normal save load skips them, so the chest/landing-pad locals in state.lua
+  -- start empty. The destinations_initialized flag makes this a one-shot.
+  State.ensure_destinations()
   Scheduler.step(event.tick, settings.global["il-scan-interval"].value, Constants, {
     bootstrap_active = Demands.bootstrap_active,
     step_bootstrap = Demands.step_bootstrap,

@@ -858,6 +858,20 @@ function Platforms.cancel_shipment(shipment_id, reason)
   end
 end
 
+-- Remove a shipment from state regardless of status. Active shipments are
+-- cancelled first so hub/pad sections and temporary schedule records are
+-- cleaned up; terminal shipments are deleted directly.
+function Platforms.remove_shipment(shipment_id, reason)
+  local state = State.ensure()
+  local shipment = state.shipments[shipment_id]
+  if not shipment then return end
+  if shipment.status == "completed" or shipment.status == "cancelled" or shipment.status == "failed" then
+    State.delete_shipment(shipment_id)
+  else
+    Platforms.cancel_shipment(shipment_id, reason or "cleared by player")
+  end
+end
+
 function Platforms.finish_shipment(shipment_id, status, reason)
   local state = State.ensure()
   local shipment = state.shipments[shipment_id]

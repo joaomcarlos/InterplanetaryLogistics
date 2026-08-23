@@ -1,5 +1,7 @@
 local Util = {}
 
+local Constants = require("scripts.constants")
+
 function Util.deep_copy(value, seen)
   if type(value) ~= "table" then
     return value
@@ -28,8 +30,8 @@ function Util.is_shippable(item_name)
   if not prototypes or not prototypes.item then return true end
   local proto = prototypes.item[item_name]
   if not proto then return false end
-  local mode = proto.send_to_orbit_mode
-  return mode == "manual" or mode == "automated"
+  if Constants.non_shippable_items[item_name] then return false end
+  return true
 end
 
 function Util.surface_location(surface)

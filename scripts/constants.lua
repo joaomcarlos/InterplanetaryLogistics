@@ -3,6 +3,15 @@ return {
   dashboard_name = "il-dashboard",
   shortcut_name = "il-toggle-dashboard",
   schema_version = 3,
+  -- Items that genuinely cannot or should not be transported via space platform.
+  -- This is a blocklist: every item NOT in this set is considered shippable.
+  -- send_to_orbit_mode controls the rocket silo's own launch button, not
+  -- whether a platform hub logistic request can trigger a launch, so most
+  -- "not-sendable" items (cliff explosives, buildings, etc.) are shippable.
+  non_shippable_items = {
+    ["rocket-silo"] = true,
+    ["captive-biter-spawner"] = true,
+  },
   history_limit = 200,
   transfer_timeout = 60 * 60 * 30,
   source_wait_timeout = 60 * 60 * 5,

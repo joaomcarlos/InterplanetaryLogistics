@@ -51,11 +51,16 @@ local function layout(player)
   local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
   local request_widths = compact and {130, 85, 60, 60, 65, 55, 80} or {190, 130, 80, 80, 90, 75, 100}
   local destination_widths = compact and {200, 280} or {270, 420}
-  local history_widths = compact and {180, 170, 90, 250} or {250, 250, 110, 430}
+  local history_widths = compact and {180, 170, 90, 250, 40} or {250, 250, 110, 430, 40}
   local shipment_widths = compact and {120, 44, 150, 75, 65, 60, 80} or {170, 44, 280, 100, 90, 90, 100}
   expand_last(fleet_widths, view_width - table_insets)
   expand_last(destination_widths, view_width - table_insets)
-  expand_last(history_widths, view_width - table_insets)
+  -- History: expand the result column (4th), keep the actions column (5th) fixed.
+  do
+    local total = 0
+    for _, width in ipairs(history_widths) do total = total + width end
+    history_widths[4] = history_widths[4] + math.max(0, view_width - table_insets - total)
+  end
   expand_last(shipment_widths, view_width - table_insets)
   expand_last(request_widths, request_list_width - table_insets)
   return {
@@ -111,6 +116,23 @@ local function add_heading(parent, caption, detail)
     spacer.style.horizontally_stretchable = true
     flow.add({type = "label", caption = detail, style = "il_muted_label"})
   end
+end
+
+local function add_heading_action(parent, caption, detail, button_props)
+  local flow = parent.add({type = "flow", direction = "horizontal"})
+  flow.style.vertical_align = "center"
+  flow.style.bottom_margin = 6
+  flow.add({type = "label", caption = caption, style = "il_section_title"})
+  local spacer = flow.add({type = "empty-widget"})
+  spacer.style.horizontally_stretchable = true
+  if detail then flow.add({type = "label", caption = detail, style = "il_muted_label"}) end
+  local button = flow.add({
+    type = "sprite-button", name = button_props.name, sprite = button_props.sprite,
+    tooltip = button_props.tooltip, style = button_props.style or "il_square_tool_button"
+  })
+  button.style.size = button_props.size or 28
+  button.style.left_margin = 6
+  return button
 end
 
 local function add_scroll(parent, name, player)
@@ -376,6 +398,11 @@ local function build_shipment_rows(parent, player)
         tags = {il_action = "cancel-shipment", shipment_id = shipment.id}
       })
     end
+    add_icon_button(actions, {
+      name = "il-shipment-clear-" .. shipment.id, sprite = "utility/trash",
+      tooltip = {"il-gui.clear-shipment"}, style = "il_square_tool_button_red",
+      tags = {il_action = "clear-shipment", shipment_id = shipment.id}
+    })
   end
   if #shipments == 0 then
     parent.add({type = "label", caption = {"il-gui.no-shipments"}, style = "il_empty_state"})
@@ -383,7 +410,10 @@ local function build_shipment_rows(parent, player)
 end
 
 local function build_shipments(parent, player)
-  add_heading(parent, {"il-gui.shipments"}, {"il-gui.shipments-subtitle"})
+  add_heading_action(parent, {"il-gui.shipments"}, {"il-gui.shipments-subtitle"}, {
+    name = "il-shipments-clear-all", sprite = "utility/trash",
+    tooltip = {"il-gui.clear-shipments-all"}, style = "il_square_tool_button_red"
+  })
   local total, loading, delivering, finished = shipment_counts(player)
   add_metrics(parent, {
     {total, {"il-gui.metric-shipments-total"}, name = "il-metric-shipments-total", sprite = "utility/starmap_platform_stopped", color = accent_colors.blue},
@@ -467,6 +497,11 @@ local function build_request_rows(parent, player, attention)
     add_icon_button(actions, {
       name = "il-request-select-" .. request.id, sprite = "utility/search",
       tooltip = {"il-gui.view"}, toggled = request.id == selected_id
+    })
+    add_icon_button(actions, {
+      name = "il-request-clear-" .. request.id, sprite = "utility/trash",
+      tooltip = {"il-gui.clear-request"}, style = "il_square_tool_button_red",
+      tags = {il_action = "clear-request", request_id = request.id}
     })
   end
   if #requests == 0 then
@@ -605,7 +640,10 @@ end
 local function build_requests(parent, player)
   request_detail_request(player)
   local active, attention = #request_list(player, false), #request_list(player, true)
-  add_heading(parent, {"il-gui.requests"}, {"il-gui.requests-subtitle"})
+  add_heading_action(parent, {"il-gui.requests"}, {"il-gui.requests-subtitle"}, {
+    name = "il-requests-clear-all", sprite = "utility/trash",
+    tooltip = {"il-gui.clear-requests-all"}, style = "il_square_tool_button_red"
+  })
   add_metrics(parent, {
     {active, {"il-gui.metric-active"}, name = "il-metric-request-active", sprite = "utility/check_mark_green", color = accent_colors.green},
     {attention, {"il-gui.metric-attention"}, name = "il-metric-request-attention", sprite = "utility/warning", color = accent_colors.orange}
@@ -654,8 +692,7 @@ end
 local function destination_list(player)
   local pads = {}
   State.ensure_destinations()
-  for unit_number in pairs(State.get_landing_pads()) do
-    local entity = game.get_entity_by_unit_number(unit_number)
+  for _, entity in pairs(State.get_landing_pads()) do
     if entity and entity.valid and entity.force and entity.force.index == player.force.index then
       pads[#pads + 1] = entity
     end
@@ -726,6 +763,16 @@ local function build_history_rows(rows, player)
       local reason = row.add({type = "label", caption = entry.reason or "—"})
       set_width(reason, widths[4])
       reason.style.single_line = true
+      local actions = row.add({type = "flow", direction = "horizontal"})
+      set_width(actions, widths[5])
+      actions.style.horizontal_spacing = 4
+      add_icon_button(actions, {
+        name = "il-history-clear-" .. tostring(entry.seq),
+        sprite = "utility/trash",
+        tooltip = {"il-gui.clear-history-entry"},
+        style = "il_square_tool_button_red",
+        tags = {il_action = "clear-history-entry", seq = entry.seq}
+      })
       any = true
     end
   end
@@ -744,9 +791,12 @@ end
 
 local function build_history(parent, player)
   local widths = layout(player).history
-  add_heading(parent, {"il-gui.history"}, {"il-gui.history-subtitle"})
+  add_heading_action(parent, {"il-gui.history"}, {"il-gui.history-subtitle"}, {
+    name = "il-history-clear-all", sprite = "utility/trash",
+    tooltip = {"il-gui.clear-history-all"}, style = "il_square_tool_button_red"
+  })
   add_metrics(parent, {{history_count(player), {"il-gui.metric-recorded-events"}, name = "il-metric-history", sprite = "utility/clock", color = accent_colors.blue}})
-  add_columns(parent, {{{"il-gui.item"}, widths[1]}, {{"il-gui.route"}, widths[2]}, {{"il-gui.status"}, widths[3]}, {{"il-gui.result"}, widths[4]}})
+  add_columns(parent, {{{"il-gui.item"}, widths[1]}, {{"il-gui.route"}, widths[2]}, {{"il-gui.status"}, widths[3]}, {{"il-gui.result"}, widths[4]}, {{"il-gui.actions"}, widths[5]}})
   build_history_rows(add_scroll(parent, "il-history-list", player), player)
 end
 
@@ -911,6 +961,13 @@ function Gui.refresh_destinations_structure(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
   refill(frame, "il-destination-list-rows", build_destination_rows, player)
+  refresh_summaries(frame, player)
+end
+
+function Gui.refresh_history_structure(player)
+  local frame = player.gui.screen[dashboard_name]
+  if not frame or not frame.valid then return end
+  refill(frame, "il-history-list-rows", build_history_rows, player)
   refresh_summaries(frame, player)
 end
 
