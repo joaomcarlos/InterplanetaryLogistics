@@ -496,6 +496,13 @@ local function platform_snapshot(platform, force_index)
   local previous = state.platform_status[platform.index]
   local request_id = state.platform_transfers[platform.index]
   local request = request_id and state.requests[request_id]
+  local shipment_id = (not request) and state.platform_shipments[platform.index]
+  local shipment = shipment_id and state.shipments[shipment_id]
+  if shipment and not request then
+    request_id = shipment.demand_id
+    request = request_id and state.requests[request_id]
+  end
+  local shipment_source = shipment and shipment.pickup_legs and shipment.pickup_legs[1] and shipment.pickup_legs[1].source
   local location = platform.space_location and platform.space_location.name
   local distance = platform.distance
   local changed = not previous or previous.location ~= location or previous.distance ~= distance
@@ -507,7 +514,7 @@ local function platform_snapshot(platform, force_index)
     status = "paused"
   elseif request then
     status = request.status == "loading" and "loading" or "delivering"
-    destination = request.status == "loading" and request.source or request.destination
+    destination = request.status == "loading" and (request.source or shipment_source or request.destination) or request.destination
   elseif platform.space_connection then
     status = "working"
     local schedule = platform.schedule
@@ -531,6 +538,7 @@ local function platform_snapshot(platform, force_index)
     status = status,
     location = location,
     destination = destination,
+    source = request and (request.source or shipment_source) or nil,
     eta = destination and Platforms.estimate_ticks_to(platform, destination) or nil,
     request_id = request_id,
     last_progress_tick = last_progress_tick,
@@ -955,6 +963,103 @@ function Platforms.check_local_fulfillment(demand)
   demand.completed_tick = game.tick
   demand.last_reason = "Fulfilled by local logistics"
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Manual dispatch from Fleet Monitor
+-- ---------------------------------------------------------------------------
+
+function Platforms.dispatch_now(platform, player)
+  local state = State.ensure()
+  if not platform or not platform.valid then
+    return false, "platform is no longer available"
+  end
+  if not Platforms.is_enrolled(player.force.index, platform.index) then
+    return false, "platform is not enrolled"
+  end
+  if state.platform_shipments[platform.index] or state.platform_transfers[platform.index] then
+    return false, "platform is already on a delivery"
+  end
+  local schedule = platform.schedule
+  if not schedule or not schedule.records or #schedule.records == 0 then
+    return false, "platform has no schedule"
+  end
+
+  local gui_state = state.gui_tabs[player.index] or {}
+  local demand_id = gui_state.selected_request_id
+  local demand = demand_id and state.demands[demand_id]
+  if not demand then
+    return false, "no request selected"
+  end
+  if demand.force_index ~= player.force.index then
+    return false, "selected request belongs to another force"
+  end
+  if demand.status == "queued" then
+    demand.status = "approved"
+    demand.approved_tick = game.tick
+    demand.approved_by = player.name or "script"
+    state.suppressions[demand.key] = nil
+  elseif demand.status ~= "approved" and demand.status ~= "dispatching"
+      and demand.status ~= "loading" and demand.status ~= "delivering" then
+    return false, "selected request is not active"
+  end
+
+  local force = player.force
+  if not schedule_has_location(schedule, demand.destination) then
+    return false, "platform route does not include the destination"
+  end
+
+  local unplanned = demand.unplanned_amount or demand.amount or 0
+  if unplanned <= 0 then
+    return false, "selected request has no unallocated cargo"
+  end
+  local capacity = Platforms.platform_capacity(platform, demand.item, demand.quality)
+  if capacity <= 0 then
+    return false, "platform has no cargo space for this item"
+  end
+  local amount = math.min(unplanned, capacity)
+
+  local sources = SourceStock.snapshot(demand, force)
+  if #sources == 0 then
+    return false, "no source planet has this item"
+  end
+  local ordered = Util.schedule_ordered_sources(platform, sources, demand.destination)
+  if #ordered == 0 then
+    return false, "platform route does not include a source for this request"
+  end
+
+  local legs = {}
+  local cumulative = 0
+  local remaining = amount
+  for _, source in ipairs(ordered) do
+    if remaining <= 0 then break end
+    local available = source.available or 0
+    if available > 0 then
+      local allocate = math.min(available, remaining)
+      cumulative = cumulative + allocate
+      legs[#legs + 1] = {
+        source = source.location,
+        planned_amount = allocate,
+        cumulative_target = cumulative,
+        status = "pending"
+      }
+      remaining = remaining - allocate
+    end
+  end
+  if #legs == 0 then
+    return false, "no source planet can provide this item"
+  end
+
+  local shipment = State.create_shipment(demand, platform, legs)
+  demand.active_shipment_amount = State.active_shipment_amount(demand.id)
+  demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
+
+  local ok, reason = Platforms.execute_shipment(shipment, force)
+  if not ok then
+    Platforms.cancel_shipment(shipment.id, reason or "manual dispatch failed")
+    return false, reason or "manual dispatch failed"
+  end
+  return true, shipment
 end
 
 -- ---------------------------------------------------------------------------

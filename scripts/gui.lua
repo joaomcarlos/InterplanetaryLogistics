@@ -48,7 +48,7 @@ local function layout(player)
     widths[#widths] = widths[#widths] + math.max(0, available - total)
     return widths
   end
-  local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
+  local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 144} or {180, 105, 125, 125, 75, 300, 152}
   local request_widths = compact and {130, 85, 60, 60, 65, 55, 80} or {190, 130, 80, 80, 90, 75, 100}
   local destination_widths = compact and {200, 280} or {270, 420}
   local history_widths = compact and {180, 170, 90, 250, 40} or {250, 250, 110, 430, 40}
@@ -213,9 +213,16 @@ local function permanent_route(platform)
 end
 
 local function platform_task(snapshot, state)
+  local shipment_id = state.platform_shipments[snapshot.platform_index]
+  local shipment = shipment_id and state.shipments[shipment_id]
+  if shipment then
+    local source = shipment.pickup_legs and shipment.pickup_legs[1] and shipment.pickup_legs[1].source
+    return {"", shipment.amount, " × [item=", shipment.item, ",quality=", shipment.quality or "normal", "] ", source or "?", " → ", shipment.destination or "?"}
+  end
   local request = snapshot.request_id and state.requests[snapshot.request_id]
   if not request then return {"il-gui.no-task"} end
-  return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ", request.source or "?", " → ", request.destination or "?"}
+  local source = request.source or snapshot.source
+  return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ", source or "?", " → ", request.destination or "?"}
 end
 
 local function build_platform_rows(parent, player, enrolled)
@@ -257,6 +264,7 @@ local function build_platform_rows(parent, player, enrolled)
       style = enrolled and "il_square_tool_button_red" or "il_square_tool_button_green",
       tags = {il_action = "platform-enrollment", platform_index = platform.index}
     })
+    local selected_request_id = (state.gui_tabs[player.index] or {}).selected_request_id
     if enrolled then
       local pinned = Platforms.is_pinned(player.force.index, platform)
       add_icon_button(controls, {
@@ -270,6 +278,13 @@ local function build_platform_rows(parent, player, enrolled)
         sprite = ready and "utility/check_mark_green" or "utility/check_mark",
         tooltip = {"il-gui.ready-tooltip"}, toggled = ready,
         tags = {il_action = "platform-ready", platform_index = platform.index}
+      })
+      add_icon_button(controls, {
+        name = "il-platform-dispatch-" .. platform.index,
+        sprite = "utility/play",
+        tooltip = {"il-gui.dispatch-tooltip"},
+        enabled = selected_request_id ~= nil,
+        tags = {il_action = "platform-dispatch", platform_index = platform.index}
       })
     end
   end
