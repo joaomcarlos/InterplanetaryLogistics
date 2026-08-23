@@ -348,6 +348,22 @@ local function on_gui_click(event)
   if id then
     Platforms.toggle_ready_signal(player.force.index, id)
     Gui.refresh_player(player)
+    return
+  end
+  id = parse_id(element.name, "il%-platform%-dispatch%-")
+  if id then
+    local platform = Util.get_platform(player.force, id)
+    if platform then
+      local ok, result = Platforms.dispatch_now(platform, player)
+      if not ok then
+        player.print({"il-gui.dispatch-failed", result})
+      end
+    end
+    Platforms.refresh_fleet()
+    Gui.refresh_player(player)
+    Gui.refresh_shipments_structure(player)
+    Gui.refresh_request_structure(player)
+    return
   end
 end
 
