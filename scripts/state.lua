@@ -207,19 +207,6 @@ function State.ensure()
     state.construction_dirty = {}
     state.shipment_dirty = {}
     jobs_cleared_this_session = true
-  else
-    state.scan_job = state.scan_job or nil
-    state.process_job = state.process_job or nil
-    state.monitor_job = state.monitor_job or nil
-    state.fleet_job = state.fleet_job or nil
-    state.gui_refresh_job = state.gui_refresh_job or nil
-    state.shipment_execution_job = state.shipment_execution_job or nil
-    state.shipment_maintenance_job = state.shipment_maintenance_job or nil
-    state.bootstrap_job = state.bootstrap_job or nil
-    state.reconciliation_job = state.reconciliation_job or nil
-    state.chest_dirty = state.chest_dirty or {}
-    state.construction_dirty = state.construction_dirty or {}
-    state.shipment_dirty = state.shipment_dirty or {}
   end
 
   if previous_schema < 3 then
@@ -229,12 +216,13 @@ function State.ensure()
     state.demands = state.demands or state.requests or {}
     state.demand_by_key = state.demand_by_key or state.request_by_key or {}
   end
-  state.requests = state.demands
-  state.request_by_key = state.demand_by_key
+  -- Drop legacy aliases so only demands/demand_by_key are persisted.
+  state.requests = nil
+  state.request_by_key = nil
 
   state.next_demand_id = math.max(state.next_demand_id or 1, state.next_request_id or 1)
   state.next_demand_id = next_id(state.demands, state.next_demand_id)
-  state.next_request_id = state.next_demand_id
+  state.next_request_id = nil
   state.shipments = state.shipments or {}
   state.shipments_by_demand = state.shipments_by_demand or {}
   state.platform_shipments = state.platform_shipments or {}
@@ -494,6 +482,20 @@ function State.delete_shipment(shipment_id)
     state.platform_shipments[shipment.platform_index] = nil
   end
   recompute_demand_source(state, demand_id)
+end
+
+-- Iterate all indexed shipment ids for a demand in sorted order, calling
+-- `callback(shipment_id, shipment)` for each. Used by cancel/fulfill/remove
+-- paths that need deterministic cleanup of child shipments.
+function State.for_each_sorted_shipment(demand_id, callback)
+  local state = State.ensure()
+  local index = state.shipments_by_demand[demand_id]
+  if not index then return end
+  local ids = sorted_keys(index)
+  for _, shipment_id in ipairs(ids) do
+    local shipment = state.shipments[shipment_id]
+    if shipment then callback(shipment_id, shipment) end
+  end
 end
 
 return State

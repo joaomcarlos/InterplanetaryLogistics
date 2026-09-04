@@ -406,7 +406,7 @@ function Platforms.finish(request, status, reason)
   request.completed_tick = game.tick
   request.last_reason = reason
   if status ~= "denied" then
-    state.request_by_key[request.key] = nil
+    state.demand_by_key[request.key] = nil
   end
   local metric_key = request.source
   if metric_key then
@@ -422,7 +422,7 @@ function Platforms.finish(request, status, reason)
 end
 
 local function monitor_transfer(state, request_id)
-  local request = state.requests[request_id]
+  local request = state.demands[request_id]
   local transfer = state.active_transfers[request_id]
   if not request or not transfer then
     state.active_transfers[request_id] = nil
@@ -600,6 +600,10 @@ end
 
 function Platforms.cancel(request, reason)
   local state = State.ensure()
+  -- Legacy active_transfers path: pre-shipment transfers created by
+  -- Platforms.dispatch use a different cleanup path via Platforms.finish.
+  -- After schema-5 migration active_transfers is empty, so this branch is
+  -- only reached for saves that still have unmigrated legacy transfers.
   if state.active_transfers[request.id] then
     Platforms.finish(request, "cancelled", reason or "Request removed")
   else
@@ -607,43 +611,31 @@ function Platforms.cancel(request, reason)
     -- sections, pad sections, and temporary schedule records are released.
     -- Without this, retiring an active demand (e.g. when a construction
     -- ghost is built or removed) orphans shipments and blocks platforms.
-    local index = state.shipments_by_demand[request.id]
-    if index then
-      local ids = {}
-      for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
-      table.sort(ids)
-      for _, shipment_id in ipairs(ids) do
-        Platforms.cancel_shipment(shipment_id, reason or "Request removed")
-      end
-    end
+    State.for_each_sorted_shipment(request.id, function(shipment_id)
+      Platforms.cancel_shipment(shipment_id, reason or "Request removed")
+    end)
     Platforms.remove_pad_section(request.id)
     request.status = "cancelled"
     request.completed_tick = game.tick
     request.last_reason = reason
-    state.request_by_key[request.key] = nil
+    state.demand_by_key[request.key] = nil
     State.add_history(request, "cancelled", reason)
   end
 end
 
 function Platforms.fulfill(request, reason)
   local state = State.ensure()
+  -- Legacy active_transfers path (see Platforms.cancel for rationale).
   if state.active_transfers[request.id] then
     Platforms.finish(request, "completed", reason or "Destination need is fulfilled")
     return
   end
-  local index = state.shipments_by_demand[request.id]
-  if index then
-    local ids = {}
-    for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
-    table.sort(ids)
-    for _, shipment_id in ipairs(ids) do
-      local shipment = state.shipments[shipment_id]
-      if shipment and shipment.status ~= "completed" and shipment.status ~= "failed"
-        and shipment.status ~= "cancelled" then
-        Platforms.cancel_shipment(shipment_id, reason or "Destination need is fulfilled")
-      end
+  State.for_each_sorted_shipment(request.id, function(shipment_id, shipment)
+    if shipment.status ~= "completed" and shipment.status ~= "failed"
+      and shipment.status ~= "cancelled" then
+      Platforms.cancel_shipment(shipment_id, reason or "Destination need is fulfilled")
     end
-  end
+  end)
   Platforms.remove_pad_section(request.id)
   request.amount = 0
   request.observed_shortage = 0
@@ -652,7 +644,7 @@ function Platforms.fulfill(request, reason)
   request.status = "completed"
   request.completed_tick = game.tick
   request.last_reason = reason or "Destination need is fulfilled"
-  state.request_by_key[request.key] = nil
+  state.demand_by_key[request.key] = nil
   state.suppressions[request.key] = nil
   State.add_history(request, "completed", request.last_reason)
 end
@@ -1025,16 +1017,8 @@ function Platforms.finish_shipment(shipment_id, status, reason)
       elseif status == "failed" and demand.unplanned_amount > 0 then
         demand.status = "approved"
       elseif status == "completed" and demand.unplanned_amount > 0 then
-        local observation_advanced = demand.last_seen_tick
-          and demand.last_seen_tick > (shipment.destination_observation_tick or shipment.started_tick or 0)
-        if observation_advanced then
-          demand.status = "approved"
-          demand.last_reason = "Partial delivery confirmed; remainder awaiting routing"
-        else
-          demand.status = "dispatching"
-          demand.reconcile_pending = true
-          demand.last_reason = "Delivery confirmed; awaiting destination reconciliation"
-        end
+        demand.status = "approved"
+        demand.last_reason = "Partial delivery confirmed; remainder awaiting routing"
       end
     end
   end
@@ -1179,6 +1163,17 @@ local function update_pickup_leg_status(shipment, platform, hub_count, baseline_
   end
 end
 
+-- Confirm how much cargo actually arrived at the destination. Three
+-- independent signals can prove receipt; take the strongest evidence and
+-- clamp to the Shipment's own amount so we never claim more than was sent.
+--
+-- 1. Pad inventory delta: current pad count minus the baseline recorded at
+--    dispatch. Most reliable when the pad is still valid.
+-- 2. Demand current-stock delta: demand.current minus the baseline current
+--    recorded at dispatch. Catches cases where bots already moved cargo off
+--    the pad into the logistic network.
+-- 3. Observed-shortage delta: baseline shortage minus current shortage. A
+--    falling shortage means the destination received and consumed items.
 local function destination_received_amount(shipment, demand, pad)
   local received = 0
   if pad and pad.valid and pad.get_item_count then

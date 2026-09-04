@@ -6,6 +6,18 @@ local Gui = require("scripts.gui")
 local Util = require("scripts.util")
 local Scheduler = require("scripts.scheduler")
 
+local function sorted_keys(values)
+  local keys = {}
+  for key in pairs(values or {}) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys, function(a, b)
+    if type(a) == type(b) then return a < b end
+    return tostring(a) < tostring(b)
+  end)
+  return keys
+end
+
 local function destination_kind(entity)
   if not entity or not entity.valid then return nil end
   if entity.name == Constants.chest_name then return "chest" end
@@ -171,23 +183,11 @@ local function on_platform_state_changed(event)
   mark_platform_shipments(event.platform or event.entity)
 end
 
-local function cargo_station(destination)
-  if not destination then return nil end
-  -- Factorio normally exposes CargoDestination as a table containing
-  -- `station`, but some 2.1 event payloads expose the station LuaEntity
-  -- directly. Do not index a LuaEntity with the table-only field.
-  if type(destination) == "table" then
-    if destination.valid ~= nil or destination.unit_number ~= nil then return destination end
-    return destination.station
-  end
-  return destination
-end
-
 local function on_cargo_pod_delivered_cargo(event)
   local pod = event.cargo_pod
   if not pod or not pod.valid then return end
   local destination = pod.cargo_pod_destination
-  local station = cargo_station(destination)
+  local station = Util.resolve_cargo_endpoint(destination)
   if station and station.valid then
     if station.type == "cargo-landing-pad" then
       mark_pad_shipments(station.unit_number)
@@ -200,7 +200,7 @@ local function on_cargo_pod_delivered_cargo(event)
     end
   end
   local origin = pod.cargo_pod_origin
-  local origin_entity = cargo_station(origin)
+  local origin_entity = Util.resolve_cargo_endpoint(origin)
   if origin_entity and origin_entity.valid and (origin_entity.type == "space-platform-hub" or origin_entity.type == "hub") then
     for _, force in pairs(game.forces or {}) do
       for _, platform in pairs(force.platforms or {}) do
@@ -333,14 +333,14 @@ local function on_gui_click(event)
   end
   id = parse_id(element.name, "il%-priority%-up%-")
   if id then
-    local request = State.ensure().requests[id]
+    local request = State.ensure().demands[id]
     if request then Demands.set_priority(id, (request.priority or 0) + 1) end
     Gui.refresh_player(player)
     return
   end
   id = parse_id(element.name, "il%-priority%-down%-")
   if id then
-    local request = State.ensure().requests[id]
+    local request = State.ensure().demands[id]
     if request then Demands.set_priority(id, (request.priority or 0) - 1) end
     Gui.refresh_player(player)
     return
@@ -490,7 +490,47 @@ remote.add_interface("interplanetary_logistics", {
   rescan = function()
     Demands.start_scan()
   end,
-  -- Temporary diagnostic interface for headless testing (read-only)
+  enable_live_test_mode = function()
+    if not game.tick_paused then
+      return "live test mode requires a paused game"
+    end
+    local setting = settings.global["il-live-test-mode"]
+    if not setting then
+      return "live test mode setting unavailable"
+    end
+    settings.global["il-live-test-mode"] = {value = true}
+    return "live test mode enabled"
+  end,
+  -- The live smoke runner may clear baselines on an already-active Shipment
+  -- so the real maintenance loop exercises the persisted-state recovery path.
+  -- This is deliberately disabled unless the isolated test server enables the
+  -- hidden runtime setting; it never creates or reanimates a Shipment.
+  prepare_live_smoke = function()
+    if not game.tick_paused then
+      return "live test mode requires a paused game"
+    end
+    local setting = settings.global["il-live-test-mode"]
+    if not setting or setting.value ~= true then
+      return "live test mode disabled"
+    end
+    local state = State.ensure()
+    local ids = {}
+    for shipment_id, shipment in pairs(state.shipments or {}) do
+      if shipment.status == "loading" or shipment.status == "delivering" then
+        shipment.baseline_count = nil
+        state.shipment_dirty[shipment_id] = true
+        ids[#ids + 1] = shipment_id
+      end
+    end
+    table.sort(ids)
+    local labels = {}
+    for _, shipment_id in ipairs(ids) do
+      labels[#labels + 1] = tostring(shipment_id)
+    end
+    return "prepared active shipments: " .. (#labels > 0 and table.concat(labels, ",") or "none")
+  end,
+  -- Diagnostic interface for headless testing. Live-test mutators are gated
+  -- and only operate on an explicitly prepared disposable fixture.
   dump_state = function()
     local state = State.ensure()
     local lines = {}
@@ -503,7 +543,8 @@ remote.add_interface("interplanetary_logistics", {
     lines[#lines + 1] = "chests: " .. tostring(table_size(State.get_chests()))
     lines[#lines + 1] = "pads: " .. tostring(table_size(State.get_landing_pads()))
     if state.demands then
-      for id, d in pairs(state.demands) do
+      for _, id in ipairs(sorted_keys(state.demands)) do
+        local d = state.demands[id]
         lines[#lines + 1] = string.format("  Demand %s: item=%s x%s status=%s dest=%s obs=%s active=%s unplanned=%s",
           tostring(id), tostring(d.item), tostring(d.amount or 0), tostring(d.status),
           tostring(d.destination), tostring(d.observed_shortage or 0),
@@ -511,10 +552,12 @@ remote.add_interface("interplanetary_logistics", {
       end
     end
     if state.shipments then
-      for id, s in pairs(state.shipments) do
-        lines[#lines + 1] = string.format("  Shipment %s: status=%s platform=%s item=%s amount=%s legs=%s",
+      for _, id in ipairs(sorted_keys(state.shipments)) do
+        local s = state.shipments[id]
+        lines[#lines + 1] = string.format("  Shipment %s: status=%s platform=%s item=%s amount=%s baseline=%s legs=%s",
           tostring(id), tostring(s.status), tostring(s.platform_name),
-          tostring(s.item), tostring(s.amount or 0), tostring(#(s.pickup_legs or {})))
+          tostring(s.item), tostring(s.amount or 0), tostring(s.baseline_count),
+          tostring(#(s.pickup_legs or {})))
         for i, leg in ipairs(s.pickup_legs or {}) do
           lines[#lines + 1] = string.format("    Leg %d: source=%s planned=%s cum_target=%s status=%s",
             i, tostring(leg.source), tostring(leg.planned_amount or 0),
@@ -573,11 +616,16 @@ remote.add_interface("interplanetary_logistics", {
           name, tostring(chest.position.x), tostring(chest.position.y),
           tostring(chest.get_item_count("iron-plate")), filter_str)
       end
-      local providers = surface.find_entities_filtered({name = "logistic-chest-passive-provider"})
-      for _, prov in pairs(providers) do
-        lines[#lines + 1] = string.format("Provider on %s at %s,%s: iron=%s",
-          name, tostring(prov.position.x), tostring(prov.position.y),
-          tostring(prov.get_item_count("iron-plate")))
+      -- Factorio 2.1 no longer accepts the removed provider prototype name
+      -- in `find_entities_filtered`. Query the stable prototype type instead
+      -- so this diagnostic remains usable across vanilla/Space Age versions.
+      local containers = surface.find_entities_filtered({type = "logistic-container"})
+      for _, container in pairs(containers) do
+        if container.name ~= Constants.chest_name then
+          lines[#lines + 1] = string.format("Logistic container on %s at %s,%s: name=%s iron=%s",
+            name, tostring(container.position.x), tostring(container.position.y),
+            tostring(container.name), tostring(container.get_item_count("iron-plate")))
+        end
       end
     end
     return table.concat(lines, "\n")

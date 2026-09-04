@@ -213,7 +213,7 @@ local function permanent_route(platform)
 end
 
 local function platform_task(snapshot, state)
-  local request = snapshot.request_id and state.requests[snapshot.request_id]
+  local request = snapshot.request_id and state.demands[snapshot.request_id]
   if not request then return {"il-gui.no-task"} end
   return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ", request.source or "?", " → ", request.destination or "?"}
 end
@@ -431,7 +431,7 @@ local function build_shipments(parent, player)
 end
 
 local function request_list(player, attention)
-  local requests = Util.sorted_values(State.ensure().requests, function(request)
+  local requests = Util.sorted_values(State.ensure().demands, function(request)
     if request.force_index ~= player.force.index then return false end
     local needs_attention = request.status == "denied" or (request.status == "approved" and request.last_reason ~= nil)
     if attention then return needs_attention end
@@ -517,7 +517,7 @@ local function request_detail_request(player)
   local state = State.ensure()
   local gui_state = state.gui_tabs[player.index] or {}
   state.gui_tabs[player.index] = gui_state
-  local request = gui_state.selected_request_id and state.requests[gui_state.selected_request_id]
+  local request = gui_state.selected_request_id and state.demands[gui_state.selected_request_id]
   if request and request.force_index == player.force.index then return request end
   local requests = request_list(player, true)
   if #requests == 0 then requests = request_list(player, false) end
@@ -753,7 +753,7 @@ local function build_history_rows(rows, player)
   local widths = layout(player).history
   for index = #state.history, 1, -1 do
     local entry = state.history[index]
-    local request = state.requests[entry.id]
+    local request = state.demands[entry.id]
     if request and request.force_index == player.force.index then
       local row = rows.add({type = "frame", direction = "horizontal", style = "il_list_row"})
       row.style.horizontally_stretchable = true
@@ -788,7 +788,7 @@ local function history_count(player)
   local state = State.ensure()
   local count = 0
   for _, entry in ipairs(state.history) do
-    local request = state.requests[entry.id]
+    local request = state.demands[entry.id]
     if request and request.force_index == player.force.index then count = count + 1 end
   end
   return count
@@ -1023,7 +1023,7 @@ function Gui.set_view(player, view)
 end
 
 function Gui.select_request(player, request_id)
-  local request = State.ensure().requests[request_id]
+  local request = State.ensure().demands[request_id]
   if not request or request.force_index ~= player.force.index then return end
   local state = State.ensure()
   local gui_state = state.gui_tabs[player.index] or {}
@@ -1089,30 +1089,30 @@ function Gui.refresh_player(player)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-status%-(%d+)$"))
-    if id and state.requests[id] then
-      element.caption = {"il-gui.request-status-" .. state.requests[id].status}
-      element.style.font_color = status_colors[state.requests[id].status] or status_colors.idle
+    if id and state.demands[id] then
+      element.caption = {"il-gui.request-status-" .. state.demands[id].status}
+      element.style.font_color = status_colors[state.demands[id].status] or status_colors.idle
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-source%-(%d+)$"))
-    if id and state.requests[id] then
-      element.caption = state.requests[id].source or {"il-gui.routing"}
-      element.style.font_color = state.requests[id].source and {r = 1, g = 1, b = 1} or accent_colors.muted
+    if id and state.demands[id] then
+      element.caption = state.demands[id].source or {"il-gui.routing"}
+      element.style.font_color = state.demands[id].source and {r = 1, g = 1, b = 1} or accent_colors.muted
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-destination%-(%d+)$"))
-    if id and state.requests[id] then
-      element.caption = state.requests[id].destination or "?"
+    if id and state.demands[id] then
+      element.caption = state.demands[id].destination or "?"
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-shortage%-(%d+)$"))
-    if id and state.requests[id] then
-      element.caption = tostring(state.requests[id].observed_shortage or state.requests[id].amount or 0)
+    if id and state.demands[id] then
+      element.caption = tostring(state.demands[id].observed_shortage or state.demands[id].amount or 0)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-active%-(%d+)$"))
-    if id and state.requests[id] then
-      local amt = state.requests[id].active_shipment_amount or 0
+    if id and state.demands[id] then
+      local amt = state.demands[id].active_shipment_amount or 0
       element.caption = tostring(amt)
       element.style.font_color = amt > 0 and accent_colors.blue or {r = 1, g = 1, b = 1}
       return
@@ -1140,16 +1140,16 @@ function Gui.refresh_player(player)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-route%-(%d+)$"))
-    if id and state.requests[id] then local r = state.requests[id]; element.caption = {"", r.source or {"il-gui.routing"}, " → ", r.destination or "?"}; return end
+    if id and state.demands[id] then local r = state.demands[id]; element.caption = {"", r.source or {"il-gui.routing"}, " → ", r.destination or "?"}; return end
     id = tonumber(string.match(element.name or "", "^il%-request%-ship%-(%d+)$"))
-    if id and state.requests[id] then
-      element.caption = state.requests[id].platform_name or "—"
-      element.style.font_color = state.requests[id].platform_name and accent_colors.blue or accent_colors.muted
+    if id and state.demands[id] then
+      element.caption = state.demands[id].platform_name or "—"
+      element.style.font_color = state.demands[id].platform_name and accent_colors.blue or accent_colors.muted
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-priority%-(%d+)$"))
-    if id and state.requests[id] then
-      local priority = state.requests[id].priority or 0
+    if id and state.demands[id] then
+      local priority = state.demands[id].priority or 0
       element.caption = priority_names[priority]
       element.style.font_color = priority > 0 and accent_colors.orange or (priority < 0 and accent_colors.muted or {r = 1, g = 1, b = 1})
     end

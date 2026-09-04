@@ -182,4 +182,17 @@ function Util.request_sprite(request)
   return "item/" .. request.item
 end
 
+-- Resolve a cargo pod destination/origin to its station LuaEntity.
+-- Factorio normally exposes CargoDestination as a table containing `station`,
+-- but some 2.1 event payloads expose the station LuaEntity directly. Do not
+-- index a LuaEntity with the table-only field.
+function Util.resolve_cargo_endpoint(destination)
+  if not destination then return nil end
+  if type(destination) == "table" then
+    if destination.valid ~= nil or destination.unit_number ~= nil then return destination end
+    return destination.station
+  end
+  return destination
+end
+
 return Util

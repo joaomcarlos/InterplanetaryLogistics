@@ -18,8 +18,8 @@ end
 
 local function create_request(key, data)
   local state = State.ensure()
-  local existing_id = state.request_by_key[key]
-  local existing = existing_id and state.requests[existing_id]
+  local existing_id = state.demand_by_key[key]
+  local existing = existing_id and state.demands[existing_id]
   if existing and (Constants.active_statuses[existing.status] or existing.status == "denied") then
     existing.amount = data.amount
     existing.requested = data.requested
@@ -44,8 +44,8 @@ local function create_request(key, data)
     return nil
   end
   local request = data
-  request.id = state.next_request_id
-  state.next_request_id = state.next_request_id + 1
+  request.id = state.next_demand_id
+  state.next_demand_id = state.next_demand_id + 1
   request.key = key
   request.status = "queued"
   request.created_tick = game.tick
@@ -55,8 +55,8 @@ local function create_request(key, data)
   request.observed_shortage = request.observed_shortage or request.amount or 0
   request.active_shipment_amount = 0
   request.unplanned_amount = request.observed_shortage
-  state.requests[request.id] = request
-  state.request_by_key[key] = request.id
+  state.demands[request.id] = request
+  state.demand_by_key[key] = request.id
   return request
 end
 
@@ -445,15 +445,15 @@ local function scan_construction(configured, needed)
 end
 
 local function retire_request(state, key, configured, needed)
-  local request_id = state.request_by_key[key]
-  local request = request_id and state.requests[request_id]
+  local request_id = state.demand_by_key[key]
+  local request = request_id and state.demands[request_id]
   if request then
     if request.status == "denied" and not needed[key] then
       state.suppressions[key] = nil
       if configured[key] then
         Platforms.fulfill(request, "Destination need is fulfilled")
       else
-        state.request_by_key[key] = nil
+        state.demand_by_key[key] = nil
         request.status = "cancelled"
         request.last_reason = "Original request was removed"
       end
@@ -469,7 +469,7 @@ end
 
 local function retire_unseen(configured, needed)
   local state = State.ensure()
-  for key in pairs(state.request_by_key) do
+  for key in pairs(state.demand_by_key) do
     retire_request(state, key, configured, needed)
   end
 end
@@ -489,7 +489,7 @@ local function process_single_chest(unit_number)
   collect_chest(chest, configured, groups)
   publish_chest_groups(groups, needed)
   local prefix = "chest|" .. unit_number .. "|"
-  for key in pairs(state.request_by_key) do
+  for key in pairs(state.demand_by_key) do
     if string.sub(key, 1, #prefix) == prefix and not configured[key] then
       retire_request(state, key, configured, needed)
     end
@@ -530,21 +530,21 @@ function Demands.retire_chest(unit_number)
   local state = State.ensure()
   local prefix = "chest|" .. unit_number .. "|"
   local to_remove = {}
-  for key in pairs(state.request_by_key) do
+  for key in pairs(state.demand_by_key) do
     if string.sub(key, 1, #prefix) == prefix then
       to_remove[#to_remove + 1] = key
     end
   end
   table.sort(to_remove)
   for _, key in ipairs(to_remove) do
-    local request_id = state.request_by_key[key]
-    local request = request_id and state.requests[request_id]
+    local request_id = state.demand_by_key[key]
+    local request = request_id and state.demands[request_id]
     if request then
       if Constants.active_statuses[request.status] then
         Platforms.cancel(request, "Chest removed")
       end
       state.suppressions[key] = nil
-      state.request_by_key[key] = nil
+      state.demand_by_key[key] = nil
       request.status = "cancelled"
       request.last_reason = "Chest removed"
     end
@@ -630,7 +630,7 @@ function Demands.untrack_construction(entity)
     -- Retire demands for the affected surface (will be re-created by dirty queue if needed)
     local prefix = table.concat({"alert", tracked.force_index, tracked.surface_index, ""}, "|")
     local to_retire = {}
-    for demand_key in pairs(state.request_by_key) do
+    for demand_key in pairs(state.demand_by_key) do
       if string.sub(demand_key, 1, #prefix) == prefix then
         to_retire[#to_retire + 1] = demand_key
       end
@@ -660,7 +660,7 @@ function Demands.untrack_construction_at_position(surface_index, position)
     if tracked then
       local prefix = table.concat({"alert", tracked.force_index, tracked.surface_index, ""}, "|")
       local to_retire = {}
-      for demand_key in pairs(state.request_by_key) do
+      for demand_key in pairs(state.demand_by_key) do
         if string.sub(demand_key, 1, #prefix) == prefix then
           to_retire[#to_retire + 1] = demand_key
         end
@@ -755,7 +755,7 @@ function Demands.step_construction_dirty(budget)
   for _, pair in ipairs(affected_list) do
     local prefix = table.concat({"alert", pair.force_index, pair.surface_index, ""}, "|")
     local to_retire = {}
-    for demand_key in pairs(state.request_by_key) do
+    for demand_key in pairs(state.demand_by_key) do
       if string.sub(demand_key, 1, #prefix) == prefix then
         to_retire[#to_retire + 1] = demand_key
       end
@@ -1128,7 +1128,7 @@ function Demands.step_scan(budget)
       local key = job.construction_aggregate_keys[job.construction_aggregate_index]
       if not key then
         job.retire_keys = {}
-        for key in pairs(state.request_by_key) do job.retire_keys[#job.retire_keys + 1] = key end
+        for key in pairs(state.demand_by_key) do job.retire_keys[#job.retire_keys + 1] = key end
         table.sort(job.retire_keys)
         job.retire_index = 1
         job.phase = "retire"
@@ -1160,7 +1160,7 @@ function Demands.step_scan(budget)
 end
 
 function Demands.approve(request_id, player_index, automatic)
-  local request = State.ensure().requests[request_id]
+  local request = State.ensure().demands[request_id]
   if not request or (request.status ~= "queued" and request.status ~= "denied") then
     return false
   end
@@ -1177,7 +1177,7 @@ end
 
 function Demands.deny(request_id, player_index)
   local state = State.ensure()
-  local request = state.requests[request_id]
+  local request = state.demands[request_id]
   if not request or request.status ~= "queued" then
     return false
   end
@@ -1193,7 +1193,7 @@ end
 
 function Demands.process()
   local state = State.ensure()
-  local requests = Util.sorted_values(state.requests)
+  local requests = Util.sorted_values(state.demands)
   table.sort(requests, function(a, b)
     if (a.priority or 0) == (b.priority or 0) then
       if (a.created_tick or 0) == (b.created_tick or 0) then return a.id < b.id end
@@ -1224,7 +1224,7 @@ function Demands.start_process()
   local state = State.ensure()
   if state.scan_job or state.process_job then return false end
   local ids_by_priority = {[1] = {}, [0] = {}, [-1] = {}}
-  for request_id, request in pairs(state.requests or {}) do
+  for request_id, request in pairs(state.demands or {}) do
     local priority = request.priority or 0
     if ids_by_priority[priority] then ids_by_priority[priority][#ids_by_priority[priority] + 1] = request_id end
   end
@@ -1257,7 +1257,7 @@ function Demands.step_process(budget)
       job.request_index = 1
     else
       local request_id = job.ids_by_priority[priority][job.request_index]
-      local request = state.requests[request_id]
+      local request = state.demands[request_id]
       if request then process_request(request) end
       job.request_index = job.request_index + 1
       processed = processed + 1
@@ -1267,7 +1267,7 @@ function Demands.step_process(budget)
 end
 
 function Demands.set_priority(request_id, priority)
-  local request = State.ensure().requests[request_id]
+  local request = State.ensure().demands[request_id]
   if not request or not Constants.active_statuses[request.status] then return false end
   request.priority = math.max(-1, math.min(1, priority or 0))
   return true
@@ -1283,19 +1283,13 @@ function Demands.remove(request_id, reason)
   if Constants.active_statuses[request.status] then
     Platforms.cancel(request, reason or "cleared by player")
   end
-  local index = state.shipments_by_demand[request_id]
-  if index then
-    local ids = {}
-    for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
-    table.sort(ids)
-    for _, shipment_id in ipairs(ids) do
-      Platforms.remove_shipment(shipment_id, reason or "cleared by player")
-    end
-  end
+  State.for_each_sorted_shipment(request_id, function(shipment_id)
+    Platforms.remove_shipment(shipment_id, reason or "cleared by player")
+  end)
   Platforms.remove_pad_section(request_id)
   state.demands[request_id] = nil
   if request.key then
-    state.request_by_key[request.key] = nil
+    state.demand_by_key[request.key] = nil
     state.suppressions[request.key] = nil
   end
 end

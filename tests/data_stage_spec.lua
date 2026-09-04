@@ -40,6 +40,8 @@ data = {
 
 package.loaded.data = nil
 require("data")
+package.loaded.settings = nil
+require("settings")
 
 assert(extended["logistic-container/interplanetary-requester-chest"])
 local chest_flags = extended["logistic-container/interplanetary-requester-chest"].flags or {}
@@ -60,6 +62,8 @@ assert(data.raw["gui-style"].default.il_list_row.height == 48)
 assert(data.raw["gui-style"].default.il_metric_frame.height == 76)
 assert(data.raw["gui-style"].default.il_square_tool_button.width == 32)
 assert(data.raw["gui-style"].default.il_square_tool_button.height == 32)
+assert(extended["bool-setting/il-live-test-mode"].hidden == true)
+assert(extended["bool-setting/il-live-test-mode"].default_value == false)
 for name, style in pairs(data.raw["gui-style"].default) do
   if string.match(name, "^il_") then
     assert(type(style.parent) == "string", name .. " must inherit from a Factorio base style")

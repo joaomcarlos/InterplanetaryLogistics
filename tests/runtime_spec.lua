@@ -74,8 +74,8 @@ local function test_chest_outstanding_demands()
   State.register_chest(2)
   Demands.scan()
 
-  local first = state.requests[state.request_by_key["chest|1|iron-plate|normal"]]
-  local second = state.requests[state.request_by_key["chest|2|iron-plate|normal"]]
+  local first = state.demands[state.demand_by_key["chest|1|iron-plate|normal"]]
+  local second = state.demands[state.demand_by_key["chest|2|iron-plate|normal"]]
   assert_equal(first.amount, 100, "provider inventory must not hide an undelivered chest shortage")
   assert_equal(second.amount, 100, "each requester chest should publish its own outstanding need")
 
@@ -92,12 +92,12 @@ local function test_chest_outstanding_demands()
   point_one.targeted_items_deliver = {}
   point_two.targeted_items_deliver = {}
   Demands.scan()
-  local first_request = state.requests[state.request_by_key["chest|1|iron-plate|normal"]]
+  local first_request = state.demands[state.demand_by_key["chest|1|iron-plate|normal"]]
   assert_equal(first_request.amount, 100, "new shortage should be created after local stock disappears")
   Demands.deny(first_request.id, nil)
   local denied_id = first_request.id
   Demands.scan()
-  assert_equal(state.request_by_key[first_request.key], denied_id, "denied shortage should not be raised again")
+  assert_equal(state.demand_by_key[first_request.key], denied_id, "denied shortage should not be raised again")
 
   point_one.filters = {}
   Demands.scan()
@@ -151,8 +151,8 @@ local function test_scan_scheduler_is_bounded()
   while Demands.scan_active() do Demands.step_scan(1) end
   assert_equal(state.scan_job, nil, "completed scan should clear its job")
   assert_equal(state.scan_job, nil, "bounded demand scan should finish without losing its context")
-  state.requests[1] = {id = 1, status = "queued", priority = 0, auto_approve_tick = 100}
-  state.next_request_id = 2
+  state.demands[1] = {id = 1, status = "queued", priority = 0, auto_approve_tick = 100}
+  state.next_demand_id = 2
   assert(Demands.start_process(), "scheduler should accept request processing")
   assert_equal(Demands.step_process(1), false, "request processing should respect its budget")
   while Demands.process_active() do Demands.step_process(1) end
@@ -277,9 +277,9 @@ local function test_construction_alert_surface_uses_target()
   local state = State.ensure()
   Demands.scan()
 
-  local request_id = state.request_by_key["alert|1|2|steel-chest|normal"]
+  local request_id = state.demand_by_key["alert|1|2|steel-chest|normal"]
   assert(request_id, "construction alert should use the target surface")
-  local request = state.requests[request_id]
+  local request = state.demands[request_id]
   assert_equal(request.destination_surface_index, 2, "destination surface should come from the alert target")
   assert_equal(request.destination, "vulcanus", "destination name should use the alert target surface")
   assert_equal(request.position.x, 56, "alert target position should be preferred")
@@ -336,8 +336,8 @@ local function test_construction_alert_summary_is_ignored()
   local state = State.ensure()
   Demands.scan()
 
-  assert_equal(next(state.requests), nil, "summary construction alerts should not create interplanetary requests")
-  assert_equal(state.request_by_key["alert|1|1|steel-chest|normal"], nil, "summary alerts should stay ignored")
+  assert_equal(next(state.demands), nil, "summary construction alerts should not create interplanetary requests")
+  assert_equal(state.demand_by_key["alert|1|1|steel-chest|normal"], nil, "summary alerts should stay ignored")
 end
 
 local function test_construction_alert_non_ghost_entity_target()
@@ -421,11 +421,11 @@ local function test_construction_alert_non_ghost_entity_target()
   local state = State.ensure()
   Demands.scan()
 
-  local request_id = state.request_by_key["alert|1|1|fast-inserter|normal"]
+  local request_id = state.demand_by_key["alert|1|1|fast-inserter|normal"]
   assert(request_id, "non-ghost entity target alert should create a request")
-  assert_equal(state.request_by_key["alert|1|1|construction-robot|normal"], nil, "ordinary alert targets must not replace the missing prototype")
-  assert_equal(state.next_request_id, 2, "disconnected players' personal alerts must not become force requests")
-  local request = state.requests[request_id]
+  assert_equal(state.demand_by_key["alert|1|1|construction-robot|normal"], nil, "ordinary alert targets must not replace the missing prototype")
+  assert_equal(state.next_demand_id, 2, "disconnected players' personal alerts must not become force requests")
+  local request = state.demands[request_id]
   assert_equal(request.destination_surface_index, 1, "destination surface should come from the alert target")
   assert_equal(request.destination, "nauvis", "destination name should use the alert target surface")
   assert_equal(request.position.x, 10, "alert target position should be used")
@@ -483,9 +483,9 @@ local function test_construction_alert_prototype_position_only()
   local state = State.ensure()
   Demands.scan()
 
-  local request_id = state.request_by_key["alert|1|2|assembling-machine-1|normal"]
+  local request_id = state.demand_by_key["alert|1|2|assembling-machine-1|normal"]
   assert(request_id, "prototype+position alert without target should create a request")
-  local request = state.requests[request_id]
+  local request = state.demands[request_id]
   assert_equal(request.destination_surface_index, 2, "surface should come from the get_alerts surface key")
   assert_equal(request.destination, "vulcanus", "destination should use the surface from the alert key")
   assert_equal(request.position.x, 30, "alert position should be used when no target is present")
@@ -574,9 +574,9 @@ local function test_construction_alert_dedup()
   local state = State.ensure()
   Demands.scan()
 
-  local request_id = state.request_by_key["alert|1|1|solar-panel|normal"]
+  local request_id = state.demand_by_key["alert|1|1|solar-panel|normal"]
   assert(request_id, "deduped construction alerts should create a request")
-  local request = state.requests[request_id]
+  local request = state.demands[request_id]
   assert_equal(request.amount, 2, "two unique positions should aggregate to count 2, not 3")
 end
 
@@ -634,16 +634,16 @@ local function test_construction_alert_item_request_proxy()
   local state = State.ensure()
   Demands.scan()
 
-  local speed_id = state.request_by_key["alert|1|1|speed-module|normal"]
+  local speed_id = state.demand_by_key["alert|1|1|speed-module|normal"]
   assert(speed_id, "item-request-proxy alert should create a request for speed-module")
-  local speed_req = state.requests[speed_id]
+  local speed_req = state.demands[speed_id]
   assert_equal(speed_req.amount, 2, "speed-module amount should come from item_requests")
   assert_equal(speed_req.destination_surface_index, 1, "surface should come from the proxy target")
   assert_equal(speed_req.position.x, 15, "position should come from the proxy target")
 
-  local eff_id = state.request_by_key["alert|1|1|efficiency-module|normal"]
+  local eff_id = state.demand_by_key["alert|1|1|efficiency-module|normal"]
   assert(eff_id, "item-request-proxy alert should create a request for efficiency-module")
-  local eff_req = state.requests[eff_id]
+  local eff_req = state.demands[eff_id]
   assert_equal(eff_req.amount, 1, "efficiency-module amount should come from item_requests")
 end
 
@@ -692,13 +692,13 @@ local function test_construction_alert_quality_and_proxy_count()
   local State = require("scripts.state")
   require("scripts.demands").scan()
   local state = State.ensure()
-  local chamber = state.requests[state.request_by_key["alert|1|1|biochamber|legendary"]]
+  local chamber = state.demands[state.demand_by_key["alert|1|1|biochamber|legendary"]]
   assert(chamber, "legendary entity ghost should retain its quality")
   assert_equal(chamber.amount, 1, "entity placement count should be preserved")
-  local reactors = state.requests[state.request_by_key["alert|1|1|fusion-reactor-equipment|legendary"]]
+  local reactors = state.demands[state.demand_by_key["alert|1|1|fusion-reactor-equipment|legendary"]]
   assert(reactors, "proxy item request should retain its quality")
   assert_equal(reactors.amount, 22, "proxy request must not gain an extra placement item")
-  assert_equal(state.request_by_key["alert|1|1|biochamber|normal"], nil, "legendary ghost must not create a normal request")
+  assert_equal(state.demand_by_key["alert|1|1|biochamber|normal"], nil, "legendary ghost must not create a normal request")
 end
 
 local function test_bounded_scan_unions_player_destinations()
@@ -737,8 +737,8 @@ local function test_bounded_scan_unions_player_destinations()
   assert(Demands.start_scan())
   while Demands.scan_active() do Demands.step_scan(1) end
   local state = State.ensure()
-  assert(state.request_by_key["alert|1|1|concrete|normal"], "first player's destination should be detected")
-  assert(state.request_by_key["alert|1|2|concrete|normal"], "second player's destination should be detected")
+  assert(state.demand_by_key["alert|1|1|concrete|normal"], "first player's destination should be detected")
+  assert(state.demand_by_key["alert|1|2|concrete|normal"], "second player's destination should be detected")
 end
 
 local function make_sections()
@@ -876,8 +876,8 @@ local function test_platform_commandeering()
     origin = "chest"
   }
   local state = State.ensure()
-  state.requests[1] = request
-  state.request_by_key.test = 1
+  state.demands[1] = request
+  state.demand_by_key.test = 1
   local dispatched, reason = Platforms.dispatch(request, platform, force)
   assert(dispatched, reason)
   assert_equal(#platform.schedule.records, 4, "dispatch should append two temporary records")
@@ -914,8 +914,8 @@ local function test_platform_commandeering()
     amount = 50,
     origin = "chest"
   }
-  state.requests[2] = second
-  state.request_by_key[second.key] = 2
+  state.demands[2] = second
+  state.demand_by_key[second.key] = 2
   platform.space_location = {name = "fulgora"}
   local mismatched, mismatch_reason = Platforms.dispatch(second, platform, force)
   assert_equal(mismatched, false, "chest transfer should reject a pad on another logistics network")
@@ -1653,8 +1653,8 @@ local function test_construction_network_scan_matches_game_alerts()
 
   local function request(surface_index, network_id, item, quality)
     local key = table.concat({"alert", 1, surface_index, network_id, item, quality}, "|")
-    local id = state.request_by_key[key]
-    return id and state.requests[id]
+    local id = state.demand_by_key[key]
+    return id and state.demands[id]
   end
 
   assert_equal(request(1, 101, "concrete", "normal").amount, 42, "Nauvis concrete must match the game alert")
@@ -1804,8 +1804,8 @@ local function test_state_schema_v3_initialization_and_indexes()
   assert(state.chest_dirty and state.construction_dirty and state.shipment_dirty)
   assert_equal(state.next_demand_id, 1, "fresh demand ids must start at 1")
   assert_equal(state.next_shipment_id, 1, "fresh shipment ids must start at 1")
-  assert_equal(state.requests, state.demands, "legacy requests must alias demands")
-  assert_equal(state.request_by_key, state.demand_by_key, "legacy request keys must alias demand keys")
+  assert_equal(state.requests, nil, "legacy requests alias must be dropped")
+  assert_equal(state.request_by_key, nil, "legacy request_by_key alias must be dropped")
   assert_equal(state.bootstrap_job, nil, "fresh bootstrap job must be idle")
   assert_equal(state.reconciliation_job, nil, "fresh reconciliation job must be idle")
 
@@ -1899,12 +1899,12 @@ local function test_state_schema_v3_migrates_legacy_requests_and_transfers()
   local state = State.ensure()
 
   assert_equal(state.schema_version, 5, "legacy state must migrate to schema version 5")
-  assert_equal(state.requests, state.demands, "migrated requests must remain an exact Demand alias")
-  assert_equal(state.request_by_key, state.demand_by_key, "migrated request keys must remain an exact Demand alias")
+  assert_equal(state.requests, nil, "migrated state must drop legacy requests alias")
+  assert_equal(state.request_by_key, nil, "migrated state must drop legacy request_by_key alias")
   assert_equal(state.demands[3], first, "migration must preserve Demand table identity and fields")
   assert_equal(state.demands[9], second, "migration must preserve every legacy request")
   assert_equal(state.next_demand_id, 12, "migration must preserve next request id continuity")
-  assert_equal(state.next_request_id, 12, "legacy next request id must remain usable")
+  assert_equal(state.next_request_id, nil, "legacy next request id must be dropped after migration")
   assert_equal(first.observed_shortage, 25, "observed shortage must default to the legacy amount")
   assert_equal(first.active_shipment_amount, 25, "active Shipment amount must be aggregated onto the Demand")
   assert_equal(first.unplanned_amount, 0, "fully allocated Demand must have no unplanned amount")
@@ -2486,14 +2486,14 @@ local function test_scan_finds_chests_after_destination_rebuild_on_load()
   -- Now the periodic scan must detect the requester-chest shortage.
   Demands.scan()
   local state = State.ensure()
-  local demand = state.requests[state.request_by_key["chest|42|iron-plate|normal"]]
+  local demand = state.demands[state.demand_by_key["chest|42|iron-plate|normal"]]
   assert(demand, "scan must detect the requester-chest shortage after the on-load destination rebuild")
   assert_equal(demand.amount, 100, "rebuilt scan must publish the full observed shortage")
 
   -- A subsequent scan must update shortage against current chest contents.
   chest_entity.get_item_count = function() return 40 end
   Demands.scan()
-  assert_equal(state.requests[state.request_by_key["chest|42|iron-plate|normal"]].amount, 60, "subsequent scans must update shortage against current chest contents")
+  assert_equal(state.demands[state.demand_by_key["chest|42|iron-plate|normal"]].amount, 60, "subsequent scans must update shortage against current chest contents")
 end
 
 test_scan_finds_chests_after_destination_rebuild_on_load()
@@ -4694,10 +4694,13 @@ test_platforms_cancel_cancels_shipments()
 -- Factorio 2.1 control-stage event registration and payloads
 -- ---------------------------------------------------------------------------
 
-local function load_control_event_handlers()
+local function load_control_event_handlers(live_test_mode)
   reset_modules()
   storage = {}
   settings = {global = {}}
+  if live_test_mode then
+    settings.global["il-live-test-mode"] = {value = true}
+  end
   local event_names = {
     "on_built_entity", "on_robot_built_entity", "script_raised_built", "script_raised_revive",
     "on_entity_cloned", "on_entity_upgraded", "on_player_mined_entity", "on_robot_mined_entity",
@@ -4708,6 +4711,11 @@ local function load_control_event_handlers()
   }
   defines = {events = {}, inventory = {hub_main = 1}}
   for _, name in ipairs(event_names) do defines.events[name] = name end
+  table_size = function(values)
+    local count = 0
+    for _ in pairs(values or {}) do count = count + 1 end
+    return count
+  end
 
   local handlers = {}
   script = {
@@ -4717,9 +4725,11 @@ local function load_control_event_handlers()
       handlers[event_id] = handler
     end
   }
-  remote = {add_interface = function() end}
+  local interfaces = {}
+  remote = {add_interface = function(name, interface) interfaces[name] = interface end}
   game = {
     tick = 0,
+    tick_paused = true,
     forces = {},
     surfaces = {},
     connected_players = {},
@@ -4730,7 +4740,7 @@ local function load_control_event_handlers()
 
   package.loaded["control"] = nil
   require("control")
-  return handlers, require("scripts.state")
+  return handlers, require("scripts.state"), interfaces
 end
 
 local function test_control_registers_factorio_2_1_shipment_progress_events()
@@ -4762,6 +4772,70 @@ local function test_control_marks_pad_shipment_dirty_from_delivered_cargo_payloa
   assert_equal(state.chest_dirty[1], true,
     "delivered-cargo payload must enqueue authoritative destination reconciliation")
 end
+
+local function test_control_dump_state_includes_shipment_baseline()
+  local _, State, interfaces = load_control_event_handlers()
+  local state = State.ensure()
+  state.shipments[7] = {
+    id = 7,
+    status = "loading",
+    platform_name = "Probe",
+    item = "iron-plate",
+    amount = 10,
+    baseline_count = nil,
+    pickup_legs = {}
+  }
+  local dump = interfaces.interplanetary_logistics.dump_state()
+  assert(dump:find("Shipment 7: status=loading"),
+    "diagnostic state dump should include the live shipment")
+  assert(dump:find("baseline=nil"),
+    "diagnostic state dump should expose a missing shipment baseline")
+end
+
+local function test_control_prepare_live_smoke_clears_only_active_baselines()
+  local _, State, interfaces = load_control_event_handlers(true)
+  local state = State.ensure()
+  state.shipments[7] = {
+    id = 7,
+    status = "loading",
+    baseline_count = 25,
+    pickup_legs = {}
+  }
+  state.shipments[9] = {
+    id = 9,
+    status = "failed",
+    baseline_count = 12,
+    pickup_legs = {}
+  }
+
+  local result = interfaces.interplanetary_logistics.prepare_live_smoke()
+  assert(result:find("7"), "live smoke preparation should report active shipment ids")
+  assert_equal(state.shipments[7].baseline_count, nil,
+    "live smoke preparation should clear the active Shipment baseline")
+  assert_equal(state.shipments[7].status, "loading",
+    "live smoke preparation must not reanimate or change Shipment status")
+  assert_equal(state.shipment_dirty[7], true,
+    "live smoke preparation should enqueue active Shipment maintenance")
+  assert_equal(state.shipments[9].baseline_count, 12,
+    "live smoke preparation must leave terminal Shipment state unchanged")
+end
+
+local function test_control_live_smoke_mode_is_explicitly_enabled()
+  local _, _, interfaces = load_control_event_handlers(false)
+  assert_equal(settings.global["il-live-test-mode"], nil,
+    "live-test setting should be absent from the minimal test fixture by default")
+  -- The real Factorio settings table always contains the hidden prototype;
+  -- model that entry before invoking the mod-owned setter.
+  settings.global["il-live-test-mode"] = {value = false}
+  local result = interfaces.interplanetary_logistics.enable_live_test_mode()
+  assert(result:find("enabled"), "live smoke mode should report explicit enablement")
+  assert_equal(settings.global["il-live-test-mode"].value, true,
+    "live smoke mode should be enabled by the mod-owned interface")
+end
+
+test_control_dump_state_includes_shipment_baseline()
+test_control_prepare_live_smoke_clears_only_active_baselines()
+test_control_live_smoke_mode_is_explicitly_enabled()
 
 test_control_registers_factorio_2_1_shipment_progress_events()
 test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
