@@ -24,7 +24,7 @@ Plain Lua test suites validate runtime and data-stage logic without Factorio, us
 - Prove requester-chest filter events create/update Demands independently of bootstrap, construction, reconciliation, and GUI work.
 - Cover one-time bootstrap completion plus event-driven ghost/proxy add, remove, revive, network reassociation, exact quality/count, and tracked reconciliation.
 - Source tests read Factorio-maintained logistic-network arrays, select the largest exact-quality network per planet, prefer full then best partial stock, and assert no silo/provider/reserve/reservation gate remains.
-- Cover deterministic splitting across multiple Shipments and multi-source Pickup Legs, scheduled-planet eligibility, cumulative hub requests, one Demand-owned pad request, partial/failure replanning, and legacy active-transfer migration.
+- Cover deterministic splitting across multiple Shipments and multi-source Pickup Legs, scheduled-planet eligibility, cumulative hub requests, one Demand-owned pad request, partial/failure replanning, legacy active-transfer migration, and Demand `source` tracking (set on dispatch, recomputed on cancel, cleared when all Shipments are terminal).
 - Bound every queue/bootstrap/reconciliation step and verify one busy domain cannot block chest demand or Shipment progress.
 
 ## Verification

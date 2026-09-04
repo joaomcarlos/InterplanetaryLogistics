@@ -21,15 +21,24 @@ local function create_request(key, data)
   local existing_id = state.request_by_key[key]
   local existing = existing_id and state.requests[existing_id]
   if existing and (Constants.active_statuses[existing.status] or existing.status == "denied") then
-    if existing.status == "queued" or existing.status == "approved" or existing.status == "denied" then
-      existing.amount = data.amount
-      existing.requested = data.requested
-      existing.current = data.current
-      existing.observed_shortage = data.amount
-      existing.unplanned_amount = math.max(0, (existing.observed_shortage or 0) - (existing.active_shipment_amount or 0))
-    end
+    existing.amount = data.amount
+    existing.requested = data.requested
+    existing.current = data.current
+    existing.observed_shortage = data.amount
+    existing.active_shipment_amount = State.active_shipment_amount(existing.id)
+    existing.unplanned_amount = math.max(0, existing.observed_shortage - existing.active_shipment_amount)
     existing.last_seen_tick = game.tick
+    if existing.reconcile_pending and existing.active_shipment_amount == 0
+      and existing.observed_shortage > 0 and existing.status ~= "denied" then
+      existing.reconcile_pending = nil
+      existing.status = "approved"
+      existing.completed_tick = nil
+      existing.last_reason = nil
+    end
     return existing
+  end
+  if (data.amount or 0) <= 0 then
+    return nil
   end
   if state.suppressions[key] then
     return nil
@@ -76,18 +85,17 @@ local function collect_chest(chest, configured, groups)
       local local_need = math.max(0, filter.count - inside - incoming)
       local key = table.concat({"chest", chest.unit_number, filter.name, quality}, "|")
       configured[key] = true
-      if local_need > 0 then
-        local network_id = network and network.valid and network.network_id or 0
-        local group_key = table.concat({chest.force.index, chest.surface.index, network_id, filter.name, quality}, "|")
-        local group = groups[group_key]
-        if not group then
-          group = {entries = {}}
-          groups[group_key] = group
-        end
-        group.entries[#group.entries + 1] = {
-          key = key,
-          local_need = local_need,
-          data = {
+      local network_id = network and network.valid and network.network_id or 0
+      local group_key = table.concat({chest.force.index, chest.surface.index, network_id, filter.name, quality}, "|")
+      local group = groups[group_key]
+      if not group then
+        group = {entries = {}}
+        groups[group_key] = group
+      end
+      group.entries[#group.entries + 1] = {
+        key = key,
+        local_need = local_need,
+        data = {
           origin = "chest",
           chest_unit_number = chest.unit_number,
           force_index = chest.force.index,
@@ -100,9 +108,8 @@ local function collect_chest(chest, configured, groups)
           requested = filter.count,
           current = inside + incoming,
           position = {x = chest.position.x, y = chest.position.y}
-          }
         }
-      end
+      }
     end
   end
 end
@@ -112,7 +119,7 @@ local function publish_chest_group(group, needed)
     return a.data.chest_unit_number < b.data.chest_unit_number
   end)
   for _, entry in ipairs(group.entries) do
-    needed[entry.key] = true
+    if entry.local_need > 0 then needed[entry.key] = true end
     entry.data.amount = entry.local_need
     create_request(entry.key, entry.data)
   end
@@ -295,9 +302,6 @@ local function publish_construction_entry(context, entry, configured, needed)
     available = math.max(0, entry.network.get_item_count(Util.item_id(entry.item, entry.quality)) or 0)
   end
   local shortage = math.max(0, entry.amount - available)
-  if shortage <= 0 then return end
-
-  needed[request_key] = true
   create_request(request_key, {
     origin = "construction-alert",
     force_index = force_index,
@@ -311,6 +315,8 @@ local function publish_construction_entry(context, entry, configured, needed)
     current = math.min(available, entry.amount),
     position = entry.position
   })
+  if shortage <= 0 then return end
+  needed[request_key] = true
 end
 
 local function step_construction_context(context, budget, configured, needed)
@@ -442,13 +448,21 @@ local function retire_request(state, key, configured, needed)
   local request_id = state.request_by_key[key]
   local request = request_id and state.requests[request_id]
   if request then
-    if request.status == "denied" and not configured[key] then
+    if request.status == "denied" and not needed[key] then
       state.suppressions[key] = nil
-      state.request_by_key[key] = nil
-      request.status = "cancelled"
-      request.last_reason = "Original request was removed"
+      if configured[key] then
+        Platforms.fulfill(request, "Destination need is fulfilled")
+      else
+        state.request_by_key[key] = nil
+        request.status = "cancelled"
+        request.last_reason = "Original request was removed"
+      end
     elseif Constants.active_statuses[request.status] and not needed[key] then
-      Platforms.cancel(request, "Need was fulfilled or removed")
+      if configured[key] then
+        Platforms.fulfill(request, "Destination need is fulfilled")
+      else
+        Platforms.cancel(request, "Need was removed")
+      end
     end
   end
 end
@@ -780,6 +794,15 @@ function Demands.reassociate_construction(surface_index, force_index)
   end
 end
 
+function Demands.mark_demand_dirty(demand)
+  if not demand then return end
+  if demand.origin == "chest" and demand.chest_unit_number then
+    Demands.mark_chest_dirty(demand.chest_unit_number)
+  elseif demand.destination_surface_index and demand.force_index then
+    Demands.reassociate_construction(demand.destination_surface_index, demand.force_index)
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Bounded one-time bootstrap
 -- ---------------------------------------------------------------------------
@@ -801,6 +824,12 @@ function Demands.start_bootstrap()
     phase = "force"
   }
   return true
+end
+
+function Demands.ensure_bootstrap()
+  local state = State.ensure()
+  if state.bootstrap_completed or state.bootstrap_job then return false end
+  return Demands.start_bootstrap()
 end
 
 function Demands.bootstrap_active()
@@ -1194,10 +1223,16 @@ end
 function Demands.start_process()
   local state = State.ensure()
   if state.scan_job or state.process_job then return false end
+  local ids_by_priority = {[1] = {}, [0] = {}, [-1] = {}}
+  for request_id, request in pairs(state.requests or {}) do
+    local priority = request.priority or 0
+    if ids_by_priority[priority] then ids_by_priority[priority][#ids_by_priority[priority] + 1] = request_id end
+  end
+  for _, ids in pairs(ids_by_priority) do table.sort(ids) end
   state.process_job = {
     priority_index = 1,
-    request_id = 1,
-    max_request_id = state.next_request_id - 1
+    request_index = 1,
+    ids_by_priority = ids_by_priority
   }
   return true
 end
@@ -1217,13 +1252,14 @@ function Demands.step_process(budget)
     if not priority then
       state.process_job = nil
       job = nil
-    elseif job.request_id > job.max_request_id then
+    elseif job.request_index > #(job.ids_by_priority[priority] or {}) then
       job.priority_index = job.priority_index + 1
-      job.request_id = 1
+      job.request_index = 1
     else
-      local request = state.requests[job.request_id]
-      if request and (request.priority or 0) == priority then process_request(request) end
-      job.request_id = job.request_id + 1
+      local request_id = job.ids_by_priority[priority][job.request_index]
+      local request = state.requests[request_id]
+      if request then process_request(request) end
+      job.request_index = job.request_index + 1
       processed = processed + 1
     end
   end

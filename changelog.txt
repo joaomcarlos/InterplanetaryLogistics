@@ -1,0 +1,6 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 31-8-2026
+  Compatibility:
+    - Bumped factorio_version to 2.1 and base/space-age dependencies to >= 2.1.0.
+    - Audited control/data/settings against the 2.1 API diff; no breaking API usage found.

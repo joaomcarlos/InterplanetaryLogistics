@@ -86,8 +86,8 @@ local function test_chest_outstanding_demands()
   point_one.targeted_items_deliver[1].count = 100
   point_two.targeted_items_deliver = {{name = "iron-plate", quality = "normal", count = 100}}
   Demands.scan()
-  assert_equal(first.status, "cancelled", "fully targeted demand should cancel its queued transfer")
-  assert_equal(second.status, "cancelled", "fully targeted demand should cancel every fulfilled chest transfer")
+  assert_equal(first.status, "completed", "fully targeted demand should complete its queued transfer")
+  assert_equal(second.status, "completed", "fully targeted demand should complete every fulfilled chest transfer")
 
   point_one.targeted_items_deliver = {}
   point_two.targeted_items_deliver = {}
@@ -1449,10 +1449,50 @@ local function test_plan_clears_legacy_source_fields()
   demand.source_score = 5
   local ok = env.Router.try_dispatch(demand)
   assert(ok, "planning should succeed after clearing legacy fields")
-  assert_equal(demand.source, nil, "legacy source field should be cleared")
+  assert_equal(demand.source, "fulgora", "source should be set to the first pickup leg source after dispatch")
   assert_equal(demand.source_surface_index, nil, "legacy source_surface_index should be cleared")
   assert_equal(demand.source_available, nil, "legacy source_available should be cleared")
   assert_equal(demand.source_score, nil, "legacy source_score should be cleared")
+end
+
+local function test_demand_source_tracking()
+  local env = make_planning_env()
+  env.network("fulgora", 2, 200)
+  env.platform(4, "Courier", "fulgora", {"nauvis", "fulgora"})
+  env.state.enrolled[1] = {[4] = true}
+  local demand = env.make_demand(1, 50)
+  assert_equal(demand.source, nil, "source should be unknown before dispatch")
+  local ok = env.Router.try_dispatch(demand)
+  assert(ok, "planning should succeed")
+  assert_equal(demand.source, "fulgora", "source should be set to first pickup leg source after dispatch")
+  env.State.cancel_shipment(1)
+  assert_equal(demand.source, nil, "source should clear when all shipments are cancelled")
+end
+
+local function test_demand_source_updates_when_first_shipment_cancels()
+  local env = make_planning_env()
+  env.network("fulgora", 2, 150)
+  env.platform(4, "Alpha", "fulgora", {"nauvis", "fulgora"}, 100)
+  env.platform(5, "Beta", "vulcanus", {"nauvis", "vulcanus", "fulgora"}, 100)
+  env.network("vulcanus", 3, 150)
+  env.state.enrolled[1] = {[4] = true, [5] = true}
+  local demand = env.make_demand(1, 150)
+  local ok = env.Router.try_dispatch(demand)
+  assert(ok, "planning should succeed with two ships")
+  assert(demand.source, "source should be set after multi-ship dispatch")
+  local first_source = demand.source
+  local first_shipment_id
+  for shipment_id in pairs(env.state.shipments_by_demand[1] or {}) do
+    local s = env.state.shipments[shipment_id]
+    if s and s.pickup_legs and s.pickup_legs[1] and s.pickup_legs[1].source == first_source then
+      first_shipment_id = shipment_id
+      break
+    end
+  end
+  assert(first_shipment_id, "should find the shipment matching the primary source")
+  env.State.cancel_shipment(first_shipment_id)
+  assert(demand.source, "source should remain set while another active shipment exists")
+  assert(demand.source ~= first_source, "source should update to the next active shipment source after cancel")
 end
 
 local function test_router_rank_sources_still_works()
@@ -1757,8 +1797,8 @@ local function test_state_schema_v3_initialization_and_indexes()
   local State = require("scripts.state")
   local state = State.ensure()
 
-  assert_equal(Constants.schema_version, 3, "Demand/Shipment persistence must use schema version 3")
-  assert_equal(state.schema_version, 3, "fresh state must use schema version 3")
+  assert_equal(Constants.schema_version, 5, "Demand/Shipment persistence must use schema version 5")
+  assert_equal(state.schema_version, 5, "fresh state must use schema version 5")
   assert(state.demands and state.demand_by_key and state.shipments and state.shipments_by_demand)
   assert(state.platform_shipments and state.tracked_construction)
   assert(state.chest_dirty and state.construction_dirty and state.shipment_dirty)
@@ -1858,7 +1898,7 @@ local function test_state_schema_v3_migrates_legacy_requests_and_transfers()
   local State = require("scripts.state")
   local state = State.ensure()
 
-  assert_equal(state.schema_version, 3, "legacy state must migrate to schema version 3")
+  assert_equal(state.schema_version, 5, "legacy state must migrate to schema version 5")
   assert_equal(state.requests, state.demands, "migrated requests must remain an exact Demand alias")
   assert_equal(state.request_by_key, state.demand_by_key, "migrated request keys must remain an exact Demand alias")
   assert_equal(state.demands[3], first, "migration must preserve Demand table identity and fields")
@@ -1903,8 +1943,8 @@ local function test_state_schema_v3_migrates_legacy_requests_and_transfers()
   assert_equal(state.shipments_by_demand[9][2], true, "every Shipment must be indexed by Demand")
   assert_equal(state.platform_shipments[30], 1, "Shipment must be indexed by platform")
   assert_equal(state.platform_shipments[90], 2, "each platform index must reference its Shipment")
-  assert_equal(state.active_transfers, transfers, "legacy active transfers must remain intact")
-  assert_equal(state.platform_transfers[30], 3, "legacy platform transfer indexes must remain intact")
+  assert_equal(next(state.active_transfers), nil, "legacy active transfers must be consumed after migration")
+  assert_equal(next(state.platform_transfers), nil, "legacy platform transfer indexes must be consumed after migration")
 
   local shipments = state.shipments
   state = State.ensure()
@@ -2118,7 +2158,7 @@ local function make_chest_dirty_env()
   }}
   local network = {valid = true, network_id = 7, get_item_count = function() return 0 end}
   local surface = {valid = true, index = 1, name = "nauvis", planet = {name = "nauvis"}}
-  local force = {valid = true, index = 1, players = {}}
+  local force = {valid = true, index = 1, players = {}, platforms = {}}
   local entities = {}
   local function chest(unit_number, filters)
     local point = {
@@ -2262,6 +2302,67 @@ local function test_chest_filter_zero_count_retires_demand()
   assert_equal(demand, nil, "no demand object should remain after zero-count retire")
 end
 
+local function test_active_chest_demand_refreshes_exact_delivered_count_and_remainder()
+  local State, Demands, state, chest = make_chest_dirty_env()
+  local entity = chest(1)
+  State.register_chest(1)
+  Demands.mark_chest_dirty(1)
+  while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
+
+  local key = "chest|1|iron-plate|normal"
+  local demand = state.demands[state.demand_by_key[key]]
+  local shipment = State.create_shipment(demand, {index = 99, name = "Test"}, {
+    {source = "fulgora", planned_amount = 100, cumulative_target = 100, status = "pending"}
+  })
+  shipment.status = "loading"
+  demand.status = "loading"
+  demand.active_shipment_amount = 100
+  demand.unplanned_amount = 0
+
+  entity.get_item_count = function() return 30 end
+  game.tick = 60
+  Demands.mark_chest_dirty(1)
+  while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
+
+  assert_equal(demand.amount, 70, "active chest Demand must refresh the exact outstanding count")
+  assert_equal(demand.observed_shortage, 70, "active chest Demand must retain the fresh observed shortage")
+  assert_equal(demand.current, 30, "active chest Demand must detect the already fulfilled count")
+  assert_equal(demand.active_shipment_amount, 100, "refresh must retain the real active Shipment amount")
+  assert_equal(demand.unplanned_amount, 0, "active cargo must continue covering the refreshed shortage")
+
+  State.cancel_shipment(shipment.id)
+  assert_equal(demand.unplanned_amount, 70, "cancelling cargo must expose only the exact remaining shortage")
+end
+
+local function test_fully_fulfilled_active_chest_completes_and_cleans_up()
+  local State, Demands, state, chest = make_chest_dirty_env()
+  local entity = chest(1)
+  State.register_chest(1)
+  Demands.mark_chest_dirty(1)
+  while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
+
+  local key = "chest|1|iron-plate|normal"
+  local demand = state.demands[state.demand_by_key[key]]
+  local shipment = State.create_shipment(demand, {index = 99, name = "Test"}, {
+    {source = "fulgora", planned_amount = 100, cumulative_target = 100, status = "pending"}
+  })
+  shipment.status = "loading"
+  demand.status = "loading"
+
+  entity.get_item_count = function() return 100 end
+  game.tick = 60
+  Demands.mark_chest_dirty(1)
+  while Demands.chest_dirty_active() do Demands.step_chest_dirty(8) end
+
+  assert_equal(demand.observed_shortage, 0, "fulfilled Demand must retain the zero-shortage observation")
+  assert_equal(demand.current, 100, "fulfilled Demand must retain the already delivered count")
+  assert_equal(demand.status, "completed", "destination fulfillment must complete rather than cancel the Demand")
+  assert_equal(state.demand_by_key[key], nil, "completed Demand must release its active key")
+  assert_equal(shipment.status, "cancelled", "cargo still in flight must be cancelled after local fulfillment")
+  assert_equal(state.shipments[shipment.id], nil, "fulfilled Demand must remove the active Shipment")
+  assert_equal(state.platform_shipments[99], nil, "fulfilled Demand must release the assigned platform")
+end
+
 local function test_chest_dirty_bounded_processing()
   local State, Demands, state, chest = make_chest_dirty_env()
   for unit = 1, 10 do
@@ -2315,6 +2416,8 @@ test_plan_deterministic_ordering()
 test_plan_partial_coverage()
 test_plan_non_approved_rejected()
 test_plan_clears_legacy_source_fields()
+test_demand_source_tracking()
+test_demand_source_updates_when_first_shipment_cancels()
 test_router_rank_sources_still_works()
 test_fleet_preferences_eta_and_reservations()
 test_chest_filter_event_creates_demand_without_scan()
@@ -2322,6 +2425,8 @@ test_chest_dirty_independent_of_scan_job()
 test_retire_chest_removes_all_demands()
 test_scheduler_processes_chest_dirty_before_scan()
 test_chest_filter_zero_count_retires_demand()
+test_active_chest_demand_refreshes_exact_delivered_count_and_remainder()
+test_fully_fulfilled_active_chest_completes_and_cleans_up()
 test_chest_dirty_bounded_processing()
 
 -- ---------------------------------------------------------------------------
@@ -2722,6 +2827,37 @@ local function test_event_driven_network_inventory_subtraction()
   assert_equal(state.demand_by_key[key], nil, "network inventory subtraction should retire demand when supply covers shortage")
 end
 
+local function test_active_construction_demand_refreshes_exact_network_remainder()
+  local State, Demands, state, ghost, _, _, supply = make_construction_env()
+  Demands.track_construction(ghost("spidertron", "spidertron", "normal"))
+  Demands.track_construction(ghost("spidertron", "spidertron", "normal"))
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+
+  local key = "alert|1|1|101|spidertron|normal"
+  local demand = state.demands[state.demand_by_key[key]]
+  local shipment = State.create_shipment(demand, {index = 99, name = "Test"}, {
+    {source = "fulgora", planned_amount = 2, cumulative_target = 2, status = "pending"}
+  })
+  shipment.status = "delivering"
+  demand.status = "delivering"
+  demand.active_shipment_amount = 2
+  demand.unplanned_amount = 0
+
+  supply["spidertron|normal"] = 1
+  game.tick = 60
+  Demands.reassociate_construction(1, 1)
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+
+  assert_equal(demand.amount, 1, "active construction Demand must refresh the exact outstanding count")
+  assert_equal(demand.observed_shortage, 1, "construction observation must retain the exact shortage")
+  assert_equal(demand.requested, 2, "construction observation must retain the full registered count")
+  assert_equal(demand.current, 1, "construction observation must detect already available inventory")
+  assert_equal(demand.unplanned_amount, 0, "active cargo must continue covering the refreshed construction shortage")
+
+  State.cancel_shipment(shipment.id)
+  assert_equal(demand.unplanned_amount, 1, "cancelled cargo must expose only the exact construction remainder")
+end
+
 local function test_unregistered_ghosts_ignored()
   local State, Demands, state, ghost = make_construction_env()
   -- Create a ghost that is NOT registered for construction
@@ -2846,6 +2982,7 @@ test_bounded_construction_dirty_processing()
 test_roboport_topology_reassociation()
 test_event_driven_exact_quality_and_count()
 test_event_driven_network_inventory_subtraction()
+test_active_construction_demand_refreshes_exact_network_remainder()
 test_unregistered_ghosts_ignored()
 test_scheduler_priority_bootstrap_first()
 test_scheduler_priority_construction_dirty_before_scan()
@@ -2871,6 +3008,7 @@ local function make_shipment_env()
   }
   local hub_sections = make_sections()
   local pad_sections = make_sections()
+  local pad_count = 20
   local hub = {
     valid = true,
     get_inventory = function(inv_index)
@@ -2883,7 +3021,7 @@ local function make_shipment_env()
     valid = true,
     unit_number = 50,
     position = {x = 10, y = 20},
-    get_item_count = function() return 20 end,
+    get_item_count = function() return pad_count end,
     get_logistic_sections = function() return pad_sections end
   }
   local destination_network = {valid = true, network_id = 7}
@@ -2978,6 +3116,7 @@ local function make_shipment_env()
     platform = platform, platform2 = platform2, hub = hub, pad = pad, hub_sections = hub_sections,
     pad_sections = pad_sections, inventory = inventory, make_demand = make_demand,
     set_cargo = function(v) cargo_count = v end,
+    set_pad_cargo = function(v) pad_count = v end,
     Constants = require("scripts.constants")
   }
 end
@@ -3112,6 +3251,57 @@ local function test_cancel_shipment_removes_sections_and_restores_schedule()
   assert_equal(#env.hub_sections.sections, 0, "cancel should remove hub request sections")
 end
 
+local function test_cancel_cleans_factorio_normalized_temporary_schedule_records()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+
+  local normalized = {}
+  for _, record in ipairs(env.platform.schedule.records) do
+    normalized[#normalized + 1] = {
+      station = record.station,
+      temporary = record.temporary,
+      allows_unloading = record.allows_unloading,
+      wait_conditions = record.wait_conditions
+    }
+  end
+  env.platform.schedule = {current = env.platform.schedule.current, records = normalized}
+
+  env.Platforms.cancel_shipment(shipment.id, "test cancel")
+  assert_equal(#env.platform.schedule.records, 3,
+    "cancel must remove Shipment records after Factorio strips unsupported fields")
+  assert_equal(env.platform.schedule.current, 2, "cancel must restore the permanent schedule position")
+  assert_equal(env.platform.schedule.records[1].station, "nauvis", "cleanup must preserve permanent records")
+  assert_equal(env.platform.schedule.records[2].station, "fulgora", "cleanup must preserve permanent records")
+  assert_equal(env.platform.schedule.records[3].station, "vulcanus", "cleanup must preserve permanent records")
+end
+
+local function test_missing_destination_schedule_record_fails_for_replanning()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+
+  env.platform.schedule = {
+    current = 2,
+    records = {
+      {station = "nauvis", wait_conditions = {{type = "time", ticks = 60}}},
+      {station = "fulgora", wait_conditions = {{type = "time", ticks = 60}}},
+      {station = "vulcanus", wait_conditions = {{type = "time", ticks = 60}}}
+    }
+  }
+  env.Platforms.maintain_shipment(shipment.id)
+
+  assert_equal(shipment.status, "failed", "lost destination schedule record must fail the Shipment")
+  assert_equal(demand.status, "approved", "lost shipment route must return the Demand to routing")
+  assert_equal(demand.unplanned_amount, 50, "lost shipment route must release its exact allocation")
+  assert_equal(env.state.platform_shipments[shipment.platform_index], nil,
+    "lost shipment route must release the platform")
+end
+
 local function test_cancel_shipment_preserves_onboard_cargo()
   local env = make_shipment_env()
   env.set_cargo(10)
@@ -3238,6 +3428,8 @@ test_execute_shipment_stores_baseline_and_indices()
 test_execute_shipment_fails_on_invalid_platform()
 test_execute_pending_shipments_executes_all_planned()
 test_cancel_shipment_removes_sections_and_restores_schedule()
+test_cancel_cleans_factorio_normalized_temporary_schedule_records()
+test_missing_destination_schedule_record_fails_for_replanning()
 test_cancel_shipment_preserves_onboard_cargo()
 test_cancel_shipment_removes_pad_section_when_last_shipment()
 test_finish_shipment_completed_removes_sections_and_updates_metrics()
@@ -3315,9 +3507,52 @@ local function test_shipment_maintenance_detects_delivered_cargo()
   assert_equal(shipment.status, "delivering", "should be delivering after load")
   -- Simulate platform at destination with cargo unloaded (back to baseline 10)
   env.set_cargo(10)
+  env.set_pad_cargo(70)
   env.platform.space_location = {name = "nauvis"}
   env.Platforms.maintain_shipment(shipment.id)
   assert_equal(shipment.status, "completed", "delivered cargo should complete shipment")
+end
+
+local function test_shipment_waits_for_destination_confirmed_cargo()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+
+  env.set_cargo(60)
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "delivering", "loaded cargo should enter delivery")
+
+  env.platform.space_location = {name = "nauvis"}
+  env.set_cargo(10)
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "delivering",
+    "hub inventory decrease alone must not prove destination receipt")
+
+  env.set_pad_cargo(70)
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "completed", "exact landing-pad receipt should complete the Shipment")
+  assert_equal(shipment.delivered_amount, 50, "Shipment must retain the exact destination-confirmed count")
+end
+
+local function test_shipment_without_destination_receipt_fails_for_replanning()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+
+  env.platform.space_location = {name = "nauvis"}
+  env.set_cargo(10)
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "delivering", "arrival must enter a bounded destination-confirmation state")
+
+  game.tick = shipment.destination_arrival_tick + env.Constants.delivery_confirmation_timeout + 1
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "failed", "unconfirmed destination receipt must fail after the bounded timeout")
+  assert_equal(demand.status, "approved", "failed unconfirmed delivery must return the Demand to routing")
+  assert_equal(demand.unplanned_amount, 50, "all undelivered cargo must become replannable")
 end
 
 local function test_shipment_maintenance_detects_timeout()
@@ -3344,6 +3579,23 @@ local function test_shipment_maintenance_detects_invalid_platform()
   env.Platforms.maintain_shipment(shipment.id)
   assert_equal(shipment.status, "failed", "invalid platform should fail shipment")
   env.platform.valid = true
+end
+
+local function test_shipment_maintenance_detects_invalid_destination_pad()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+
+  env.pad.valid = false
+  env.Platforms.maintain_shipment(shipment.id)
+
+  assert_equal(shipment.status, "failed", "removed destination pad must fail only its Shipment")
+  assert_equal(demand.status, "approved", "removed destination pad must return the Demand to routing")
+  assert_equal(demand.unplanned_amount, 50, "removed pad must release the exact Shipment allocation")
+  assert_equal(env.state.platform_shipments[shipment.platform_index], nil,
+    "removed destination pad must release the assigned platform")
 end
 
 local function test_shipment_dirty_queue_processes_marked_shipments()
@@ -3510,6 +3762,85 @@ local function test_scheduler_priority_shipment_execution_before_scan()
   assert_equal(calls.step_scan, nil, "scan must not advance while shipment execution is active")
 end
 
+local function test_scheduler_starts_shipment_execution_when_not_active()
+  reset_modules()
+  local Scheduler = require("scripts.scheduler")
+  local state = {shipment_exec_active = false, has_planned = true}
+  local calls = {}
+  local constants = {
+    monitor_interval = 60,
+    monitor_offset = 5,
+    shipment_maintenance_offset = 10,
+    fleet_refresh_offset = 30,
+    gui_refresh_interval = 120,
+    gui_refresh_offset = 15,
+    scan_work_per_tick = 1,
+    process_work_per_tick = 1,
+    monitor_work_per_tick = 1,
+    fleet_work_per_tick = 1,
+    gui_work_per_tick = 1,
+    chest_dirty_work_per_tick = 8,
+    shipment_dirty_work_per_tick = 8,
+    shipment_execution_work_per_tick = 4,
+    shipment_maintenance_work_per_tick = 4
+  }
+  local callbacks = {
+    chest_dirty_active = function() return false end,
+    step_chest_dirty = function() return true end,
+    construction_dirty_active = function() return false end,
+    step_construction_dirty = function() return true end,
+    shipment_dirty_active = function() return false end,
+    step_shipment_dirty = function() return true end,
+    shipment_execution_active = function() return state.shipment_exec_active end,
+    start_shipment_execution = function()
+      calls.start_shipment_execution = (calls.start_shipment_execution or 0) + 1
+      if state.has_planned then
+        state.shipment_exec_active = true
+        return true
+      end
+      return false
+    end,
+    step_shipment_execution = function()
+      calls.step_shipment_execution = (calls.step_shipment_execution or 0) + 1
+      state.shipment_exec_active = false
+      return true
+    end,
+    scan_active = function() return false end,
+    process_active = function() return false end,
+    start_scan = function() calls.start_scan = (calls.start_scan or 0) + 1 end,
+    step_scan = function() calls.step_scan = (calls.step_scan or 0) + 1; return true end,
+    start_process = function() calls.start_process = (calls.start_process or 0) + 1 end,
+    step_process = function() calls.step_process = (calls.step_process or 0) + 1 end,
+    shipment_maintenance_active = function() return false end,
+    start_shipment_maintenance = function() calls.start_shipment_maintenance = (calls.start_shipment_maintenance or 0) + 1 end,
+    step_shipment_maintenance = function() calls.step_shipment_maintenance = (calls.step_shipment_maintenance or 0) + 1 end,
+    monitor_active = function() return false end,
+    fleet_refresh_active = function() return false end,
+    gui_refresh_active = function() return false end,
+    start_monitor = function() calls.start_monitor = (calls.start_monitor or 0) + 1 end,
+    start_fleet_refresh = function() calls.start_fleet_refresh = (calls.start_fleet_refresh or 0) + 1 end,
+    start_gui_refresh = function() calls.start_gui_refresh = (calls.start_gui_refresh or 0) + 1 end,
+    step_monitor = function() calls.step_monitor = (calls.step_monitor or 0) + 1 end,
+    step_fleet_refresh = function() calls.step_fleet_refresh = (calls.step_fleet_refresh or 0) + 1 end,
+    step_gui_refresh = function() calls.step_gui_refresh = (calls.step_gui_refresh or 0) + 1 end
+  }
+  -- When there are planned shipments but no active execution job, the scheduler
+  -- must call start_shipment_execution and then step it in the same tick.
+  assert_equal(Scheduler.step(120, 120, constants, callbacks), "shipment-execution",
+    "scheduler should start and step shipment execution when planned shipments exist")
+  assert_equal(calls.start_shipment_execution, 1, "scheduler should call start_shipment_execution")
+  assert_equal(calls.step_shipment_execution, 1, "scheduler should step shipment execution after starting it")
+  assert_equal(calls.start_scan, nil, "scan must not start when shipment execution is running")
+
+  -- When there are no planned shipments, start returns false and scheduler falls through.
+  state.has_planned = false
+  state.shipment_exec_active = false
+  calls.start_scan = nil
+  local result = Scheduler.step(240, 120, constants, callbacks)
+  assert_equal(result ~= "shipment-execution", true,
+    "scheduler should not return shipment-execution when no planned shipments exist")
+end
+
 local function test_scheduler_shipment_maintenance_on_own_offset()
   reset_modules()
   local Scheduler = require("scripts.scheduler")
@@ -3573,6 +3904,125 @@ local function test_scheduler_shipment_maintenance_on_own_offset()
   assert_equal(calls.step_shipment_maintenance, 1, "shipment maintenance should step at its offset")
 end
 
+local function test_scheduler_steps_active_shipment_maintenance_during_routing()
+  reset_modules()
+  local Scheduler = require("scripts.scheduler")
+  local calls = {}
+  local state = {scan = true, shipment_maintenance = true}
+  local constants = {
+    monitor_interval = 60, monitor_offset = 5, shipment_maintenance_offset = 10,
+    fleet_refresh_offset = 30, gui_refresh_interval = 120, gui_refresh_offset = 15,
+    scan_work_per_tick = 1, process_work_per_tick = 1, monitor_work_per_tick = 1,
+    fleet_work_per_tick = 1, gui_work_per_tick = 1, chest_dirty_work_per_tick = 8,
+    construction_dirty_work_per_tick = 8, shipment_dirty_work_per_tick = 8,
+    shipment_execution_work_per_tick = 4, shipment_maintenance_work_per_tick = 4
+  }
+  local callbacks = {
+    bootstrap_active = function() return false end,
+    step_bootstrap = function() return true end,
+    chest_dirty_active = function() return false end,
+    step_chest_dirty = function() return true end,
+    construction_dirty_active = function() return false end,
+    step_construction_dirty = function() return true end,
+    shipment_dirty_active = function() return false end,
+    step_shipment_dirty = function() return true end,
+    shipment_execution_active = function() return false end,
+    start_shipment_execution = function() return false end,
+    step_shipment_execution = function() return true end,
+    scan_active = function() return state.scan end,
+    process_active = function() return false end,
+    start_scan = function() state.scan = true end,
+    step_scan = function() calls.step_scan = (calls.step_scan or 0) + 1; return false end,
+    start_process = function() return true end,
+    step_process = function() return true end,
+    shipment_maintenance_active = function() return state.shipment_maintenance end,
+    start_shipment_maintenance = function() state.shipment_maintenance = true end,
+    step_shipment_maintenance = function()
+      calls.step_shipment_maintenance = (calls.step_shipment_maintenance or 0) + 1
+      return false
+    end,
+    monitor_active = function() return false end,
+    fleet_refresh_active = function() return false end,
+    gui_refresh_active = function() return false end,
+    start_monitor = function() return true end,
+    start_fleet_refresh = function() return true end,
+    start_gui_refresh = function() return true end,
+    step_monitor = function() return true end,
+    step_fleet_refresh = function() return true end,
+    step_gui_refresh = function() return true end
+  }
+
+  assert_equal(Scheduler.step(121, 0, constants, callbacks), "routing",
+    "routing should remain the primary scheduler lane")
+  assert_equal(calls.step_scan, 1, "routing must still advance")
+  assert_equal(calls.step_shipment_maintenance, 1,
+    "active Shipment maintenance must advance without waiting for routing to finish")
+end
+
+local function test_scheduler_does_not_starve_execution_behind_construction_dirty()
+  reset_modules()
+  local Scheduler = require("scripts.scheduler")
+  local calls = {}
+  local state = {shipment_execution = false}
+  local constants = {
+    monitor_interval = 60, monitor_offset = 5, shipment_maintenance_offset = 10,
+    fleet_refresh_offset = 30, gui_refresh_interval = 120, gui_refresh_offset = 15,
+    scan_work_per_tick = 1, process_work_per_tick = 1, monitor_work_per_tick = 1,
+    fleet_work_per_tick = 1, gui_work_per_tick = 1, chest_dirty_work_per_tick = 8,
+    construction_dirty_work_per_tick = 8, shipment_dirty_work_per_tick = 8,
+    shipment_execution_work_per_tick = 4, shipment_maintenance_work_per_tick = 4
+  }
+  local callbacks = {
+    bootstrap_active = function() return false end,
+    step_bootstrap = function() return true end,
+    chest_dirty_active = function() return false end,
+    step_chest_dirty = function() return true end,
+    construction_dirty_active = function() return true end,
+    step_construction_dirty = function()
+      calls.step_construction_dirty = (calls.step_construction_dirty or 0) + 1
+      return false
+    end,
+    shipment_dirty_active = function() return false end,
+    step_shipment_dirty = function() return true end,
+    shipment_execution_active = function() return state.shipment_execution end,
+    start_shipment_execution = function()
+      calls.start_shipment_execution = (calls.start_shipment_execution or 0) + 1
+      state.shipment_execution = true
+      return true
+    end,
+    step_shipment_execution = function()
+      calls.step_shipment_execution = (calls.step_shipment_execution or 0) + 1
+      state.shipment_execution = false
+      return true
+    end,
+    scan_active = function() return false end,
+    process_active = function() return false end,
+    start_scan = function() return false end,
+    step_scan = function() return true end,
+    start_process = function() return false end,
+    step_process = function() return true end,
+    shipment_maintenance_active = function() return false end,
+    start_shipment_maintenance = function() return false end,
+    step_shipment_maintenance = function() return true end,
+    monitor_active = function() return false end,
+    fleet_refresh_active = function() return false end,
+    gui_refresh_active = function() return false end,
+    start_monitor = function() return false end,
+    start_fleet_refresh = function() return false end,
+    start_gui_refresh = function() return false end,
+    step_monitor = function() return true end,
+    step_fleet_refresh = function() return true end,
+    step_gui_refresh = function() return true end
+  }
+
+  assert_equal(Scheduler.step(1, 0, constants, callbacks), "construction-dirty",
+    "construction reconciliation should remain the primary lane")
+  assert_equal(calls.step_construction_dirty, 1, "construction reconciliation must advance")
+  assert_equal(calls.start_shipment_execution, 1, "planned Shipment execution must be started")
+  assert_equal(calls.step_shipment_execution, 1,
+    "planned Shipment execution must advance despite continuous construction work")
+end
+
 local function test_short_pickup_leg_continues_to_next_source()
   local env = make_shipment_env()
   -- Create a demand with two sources (fulgora 50, vulcanus 30)
@@ -3605,13 +4055,26 @@ local function test_partial_delivery_returns_remainder_to_demand()
   env.Platforms.execute_shipment(shipment, env.force)
   -- Simulate short pickup: only 30 loaded (baseline 10 + 30 = 40)
   env.set_cargo(40)
-  -- Platform goes to destination without full cargo
+  -- Platform goes to destination without full cargo. Arrival alone is not
+  -- delivery; the cargo still has to leave the hub and be observed there.
   env.platform.space_location = {name = "nauvis"}
   env.Platforms.maintain_shipment(shipment.id)
-  -- Shipment should complete (partial delivery)
-  assert_equal(shipment.status, "completed", "partial delivery should complete shipment")
-  -- Demand should have unplanned amount for replanning
-  assert(demand.unplanned_amount > 0, "partial delivery should return remainder to demand for replanning")
+  assert_equal(shipment.status, "delivering", "short pickup at the destination must wait for unloading")
+
+  env.set_cargo(10)
+  env.set_pad_cargo(50)
+  demand.amount = 50
+  demand.observed_shortage = 50
+  demand.current = 30
+  game.tick = 160
+  demand.last_seen_tick = game.tick
+  env.Platforms.maintain_shipment(shipment.id)
+
+  assert_equal(shipment.status, "completed", "destination-confirmed partial delivery should complete its Shipment")
+  assert_equal(shipment.delivered_amount, 30, "Shipment must retain the exact partial delivered count")
+  assert_equal(demand.status, "approved", "partial Shipment must return its Demand to routing")
+  assert_equal(demand.unplanned_amount, 50, "only the exact undelivered remainder may be replanned")
+  assert_equal(env.state.demand_by_key[demand.key], demand.id, "partial delivery must retain Demand ownership")
 end
 
 local function test_local_fulfillment_during_maintenance()
@@ -3671,13 +4134,19 @@ end
 test_bounded_shipment_execution_budget()
 test_shipment_maintenance_detects_loaded_cargo()
 test_shipment_maintenance_detects_delivered_cargo()
+test_shipment_waits_for_destination_confirmed_cargo()
+test_shipment_without_destination_receipt_fails_for_replanning()
 test_shipment_maintenance_detects_timeout()
 test_shipment_maintenance_detects_invalid_platform()
+test_shipment_maintenance_detects_invalid_destination_pad()
 test_shipment_dirty_queue_processes_marked_shipments()
 test_shipment_dirty_queue_is_bounded()
 test_scheduler_priority_shipment_dirty_before_scan()
 test_scheduler_priority_shipment_execution_before_scan()
+test_scheduler_starts_shipment_execution_when_not_active()
 test_scheduler_shipment_maintenance_on_own_offset()
+test_scheduler_steps_active_shipment_maintenance_during_routing()
+test_scheduler_does_not_starve_execution_behind_construction_dirty()
 test_short_pickup_leg_continues_to_next_source()
 test_partial_delivery_returns_remainder_to_demand()
 test_local_fulfillment_during_maintenance()
@@ -4179,5 +4648,104 @@ local function test_blocklist_items_filtered_from_construction()
 end
 
 test_blocklist_items_filtered_from_construction()
+
+-- ---------------------------------------------------------------------------
+-- Platforms.cancel cleanup tests
+-- ---------------------------------------------------------------------------
+
+local function test_platforms_cancel_cancels_shipments()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  assert(shipment, "shipment should be created")
+  env.Platforms.execute_shipment(shipment, env.force)
+  assert_equal(shipment.status, "loading", "shipment should be loading after execution")
+  assert_equal(env.state.platform_shipments[4], shipment.id, "platform should be assigned")
+  -- Simulate retire_request cancelling the demand (e.g. construction ghost built)
+  env.Platforms.cancel(demand, "Need was fulfilled or removed")
+  -- The shipment must be cancelled so the platform is released
+  assert_equal(shipment.status, "cancelled", "Platforms.cancel must cancel child shipments")
+  assert_equal(env.state.platform_shipments[4], nil, "Platforms.cancel must release the platform")
+  assert_equal(env.state.pad_sections[demand.id], nil, "Platforms.cancel must remove pad section")
+end
+
+test_platforms_cancel_cancels_shipments()
+
+-- ---------------------------------------------------------------------------
+-- Factorio 2.1 control-stage event registration and payloads
+-- ---------------------------------------------------------------------------
+
+local function load_control_event_handlers()
+  reset_modules()
+  storage = {}
+  settings = {global = {}}
+  local event_names = {
+    "on_built_entity", "on_robot_built_entity", "script_raised_built", "script_raised_revive",
+    "on_entity_cloned", "on_entity_upgraded", "on_player_mined_entity", "on_robot_mined_entity",
+    "on_entity_died", "script_raised_destroy", "on_entity_logistic_slot_changed",
+    "on_space_platform_changed_state", "on_cargo_pod_delivered_cargo", "on_lua_shortcut",
+    "on_gui_click", "on_player_display_resolution_changed", "on_player_display_scale_changed",
+    "on_gui_closed", "on_tick"
+  }
+  defines = {events = {}, inventory = {hub_main = 1}}
+  for _, name in ipairs(event_names) do defines.events[name] = name end
+
+  local handlers = {}
+  script = {
+    on_init = function() end,
+    on_configuration_changed = function() end,
+    on_event = function(event_id, handler)
+      handlers[event_id] = handler
+    end
+  }
+  remote = {add_interface = function() end}
+  game = {
+    tick = 0,
+    forces = {},
+    surfaces = {},
+    connected_players = {},
+    get_entity_by_unit_number = function() return nil end,
+    get_surface = function() return nil end,
+    get_player = function() return nil end
+  }
+
+  package.loaded["control"] = nil
+  require("control")
+  return handlers, require("scripts.state")
+end
+
+local function test_control_registers_factorio_2_1_shipment_progress_events()
+  local handlers = load_control_event_handlers()
+  assert(handlers[defines.events.on_space_platform_changed_state],
+    "control must register Factorio 2.1 platform-state progress events")
+  assert(handlers[defines.events.on_cargo_pod_delivered_cargo],
+    "control must register Factorio 2.1 delivered-cargo events")
+end
+
+local function test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
+  local handlers, State = load_control_event_handlers()
+  local state = State.ensure()
+  state.demands[3] = {id = 3, origin = "chest", chest_unit_number = 1}
+  state.pad_sections[3] = {pad_unit_number = 99}
+  state.shipments[42] = {id = 42, demand_id = 3, status = "delivering"}
+  state.shipments_by_demand[3] = {[42] = true}
+
+  local pad = {valid = true, type = "cargo-landing-pad", unit_number = 99}
+  handlers[defines.events.on_cargo_pod_delivered_cargo]({
+    cargo_pod = {
+      valid = true,
+      cargo_pod_destination = {type = "station", station = pad}
+    }
+  })
+
+  assert_equal(state.shipment_dirty[42], true,
+    "delivered-cargo payload must enqueue the Shipment attached to its landing pad")
+  assert_equal(state.chest_dirty[1], true,
+    "delivered-cargo payload must enqueue authoritative destination reconciliation")
+end
+
+test_control_registers_factorio_2_1_shipment_progress_events()
+test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
 
 print("runtime_spec: OK")

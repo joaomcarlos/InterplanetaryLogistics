@@ -97,7 +97,7 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Project Overview
 
-Factorio 2.0 Space Age mod that turns exact requester-chest and construction shortages into multi-source, multi-ship deliveries through enrolled space platforms. Written in Lua 5.2 targeting the Factorio mod runtime.
+Factorio 2.1 Space Age mod that turns exact requester-chest and construction shortages into multi-source, multi-ship deliveries through enrolled space platforms. Written in Lua 5.2 targeting the Factorio mod runtime.
 
 - Entry points: `data.lua` (data stage), `control.lua` (runtime), `settings.lua` (mod settings)
 - Runtime modules live in `scripts/`
@@ -107,7 +107,7 @@ Factorio 2.0 Space Age mod that turns exact requester-chest and construction sho
 
 ## Repo-Wide Rules
 
-- Target Lua 5.2 syntax and Factorio 2.0 API
+- Target Lua 5.2 syntax and Factorio 2.1 API
 - All runtime demands, shipments, tracked construction entities, route preferences, platform options, fleet snapshots, and GUI state persist through `storage.interplanetary_logistics` via `scripts/state.lua`
 - Never mutate a platform's permanent schedule records; only append/remove temporary records
 - Deterministic iteration: sort before iterating when order affects game state (desync safety)

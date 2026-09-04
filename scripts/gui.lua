@@ -49,7 +49,7 @@ local function layout(player)
     return widths
   end
   local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
-  local request_widths = compact and {130, 85, 60, 60, 65, 55, 80} or {190, 130, 80, 80, 90, 75, 100}
+  local request_widths = compact and {120, 75, 80, 50, 50, 60, 50, 80} or {180, 100, 120, 70, 70, 80, 65, 100}
   local destination_widths = compact and {200, 280} or {270, 420}
   local history_widths = compact and {180, 170, 90, 250, 40} or {250, 250, 110, 430, 40}
   local shipment_widths = compact and {120, 44, 150, 75, 65, 60, 80} or {170, 44, 280, 100, 90, 90, 100}
@@ -469,21 +469,25 @@ local function build_request_rows(parent, player, attention)
     set_width(item, widths[1])
     item.style.single_line = true
     if request.id == selected_id then item.style.font_color = accent_colors.orange end
+    local source = row.add({type = "label", name = "il-request-source-" .. request.id, caption = request.source or {"il-gui.routing"}})
+    set_width(source, widths[2])
+    source.style.single_line = true
+    if not request.source then source.style.font_color = accent_colors.muted end
     local destination = row.add({type = "label", name = "il-request-destination-" .. request.id, caption = request.destination or "?"})
-    set_width(destination, widths[2])
+    set_width(destination, widths[3])
     destination.style.single_line = true
     local shortage = row.add({type = "label", name = "il-request-shortage-" .. request.id, caption = tostring(request.observed_shortage or request.amount or 0)})
-    set_width(shortage, widths[3])
+    set_width(shortage, widths[4])
     local active = row.add({type = "label", name = "il-request-active-" .. request.id, caption = tostring(request.active_shipment_amount or 0)})
-    set_width(active, widths[4])
+    set_width(active, widths[5])
     if (request.active_shipment_amount or 0) > 0 then active.style.font_color = accent_colors.blue end
     local status = row.add({type = "label", name = "il-request-status-" .. request.id, caption = {"il-gui.request-status-" .. request.status}, tooltip = request.last_reason})
-    set_width(status, widths[5])
+    set_width(status, widths[6])
     status.style.font_color = status_colors[request.status] or status_colors.idle
     local shipments_count = row.add({type = "label", name = "il-request-shipments-" .. request.id, caption = tostring(demand_shipment_count(request.id))})
-    set_width(shipments_count, widths[6])
+    set_width(shipments_count, widths[7])
     local actions = row.add({type = "flow", direction = "horizontal"})
-    set_width(actions, widths[7])
+    set_width(actions, widths[8])
     actions.style.horizontal_spacing = 3
     if request.status == "queued" then
       add_icon_button(actions, {name = "il-approve-" .. request.id, sprite = "utility/check_mark", tooltip = {"il-gui.approve"}, style = "il_square_tool_button_green"})
@@ -583,6 +587,7 @@ local function build_request_detail(parent, player)
   parent.add({type = "line", direction = "horizontal"})
   local color = status_colors[request.status] or status_colors.idle
   add_detail_line(parent, {"il-gui.detail-status"}, {"il-gui.request-status-" .. request.status}, color)
+  add_detail_line(parent, {"il-gui.detail-source"}, request.source or {"il-gui.routing"})
   add_detail_line(parent, {"il-gui.detail-destination"}, request.destination)
   add_detail_line(parent, {"il-gui.observed-shortage"}, tostring(request.observed_shortage or request.amount or 0))
   add_detail_line(parent, {"il-gui.active-shipment-amount"}, tostring(request.active_shipment_amount or 0))
@@ -657,10 +662,10 @@ local function build_requests(parent, player)
   list.style.horizontally_stretchable = true
   local widths = sizes.requests
   add_columns(list, {
-    {{"il-gui.item"}, widths[1]}, {{"il-gui.destination"}, widths[2]},
-    {{"il-gui.observed-shortage"}, widths[3]}, {{"il-gui.active-shipment-amount"}, widths[4]},
-    {{"il-gui.status"}, widths[5]}, {{"il-gui.demand-shipments"}, widths[6]},
-    {{"il-gui.actions"}, widths[7]}
+    {{"il-gui.item"}, widths[1]}, {{"il-gui.source"}, widths[2]}, {{"il-gui.destination"}, widths[3]},
+    {{"il-gui.observed-shortage"}, widths[4]}, {{"il-gui.active-shipment-amount"}, widths[5]},
+    {{"il-gui.status"}, widths[6]}, {{"il-gui.demand-shipments"}, widths[7]},
+    {{"il-gui.actions"}, widths[8]}
   })
   local scroll = list.add({type = "scroll-pane", name = "il-request-list", direction = "vertical", style = "il_scroll_pane"})
   scroll.style.horizontally_stretchable = true
@@ -1087,6 +1092,12 @@ function Gui.refresh_player(player)
     if id and state.requests[id] then
       element.caption = {"il-gui.request-status-" .. state.requests[id].status}
       element.style.font_color = status_colors[state.requests[id].status] or status_colors.idle
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-request%-source%-(%d+)$"))
+    if id and state.requests[id] then
+      element.caption = state.requests[id].source or {"il-gui.routing"}
+      element.style.font_color = state.requests[id].source and {r = 1, g = 1, b = 1} or accent_colors.muted
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-destination%-(%d+)$"))

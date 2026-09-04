@@ -6,7 +6,6 @@ local Util = require("scripts.util")
 local Router = {}
 
 local function clear_dispatch_candidate(request)
-  request.source = nil
   request.source_surface_index = nil
   request.source_available = nil
   request.source_score = nil

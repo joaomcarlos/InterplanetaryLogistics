@@ -217,7 +217,7 @@ function Platforms.find_matching(request, force, source, destination)
   for _, platform in pairs(force.platforms) do
     if platform.valid and enrolled[platform.index] then
       enrolled_count = enrolled_count + 1
-      if not state.platform_transfers[platform.index] then
+      if not state.platform_shipments[platform.index] and not state.platform_transfers[platform.index] then
         idle_count = idle_count + 1
         local schedule = platform.schedule
         if schedule_has_location(schedule, source) and schedule_has_location(schedule, destination) then
@@ -494,8 +494,10 @@ end
 local function platform_snapshot(platform, force_index)
   local state = State.ensure()
   local previous = state.platform_status[platform.index]
-  local request_id = state.platform_transfers[platform.index]
-  local request = request_id and state.requests[request_id]
+  local shipment_id = state.platform_shipments[platform.index]
+  local shipment = shipment_id and state.shipments[shipment_id]
+  local request_id = shipment and shipment.demand_id or state.platform_transfers[platform.index]
+  local request = request_id and state.demands[request_id]
   local location = platform.space_location and platform.space_location.name
   local distance = platform.distance
   local changed = not previous or previous.location ~= location or previous.distance ~= distance
@@ -505,6 +507,9 @@ local function platform_snapshot(platform, force_index)
   local destination
   if platform.paused then
     status = "paused"
+  elseif shipment then
+    status = shipment.status == "loading" and "loading" or "delivering"
+    destination = shipment.status == "loading" and (shipment.source or (request and request.source)) or (request and request.destination)
   elseif request then
     status = request.status == "loading" and "loading" or "delivering"
     destination = request.status == "loading" and request.source or request.destination
@@ -533,6 +538,7 @@ local function platform_snapshot(platform, force_index)
     destination = destination,
     eta = destination and Platforms.estimate_ticks_to(platform, destination) or nil,
     request_id = request_id,
+    shipment_id = shipment_id,
     last_progress_tick = last_progress_tick,
     distance = distance,
     speed = platform.speed or 0,
@@ -593,15 +599,62 @@ function Platforms.refresh_fleet()
 end
 
 function Platforms.cancel(request, reason)
-  if State.ensure().active_transfers[request.id] then
+  local state = State.ensure()
+  if state.active_transfers[request.id] then
     Platforms.finish(request, "cancelled", reason or "Request removed")
   else
+    -- Cancel all shipments belonging to this demand so platforms, hub
+    -- sections, pad sections, and temporary schedule records are released.
+    -- Without this, retiring an active demand (e.g. when a construction
+    -- ghost is built or removed) orphans shipments and blocks platforms.
+    local index = state.shipments_by_demand[request.id]
+    if index then
+      local ids = {}
+      for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
+      table.sort(ids)
+      for _, shipment_id in ipairs(ids) do
+        Platforms.cancel_shipment(shipment_id, reason or "Request removed")
+      end
+    end
+    Platforms.remove_pad_section(request.id)
     request.status = "cancelled"
     request.completed_tick = game.tick
     request.last_reason = reason
-    State.ensure().request_by_key[request.key] = nil
+    state.request_by_key[request.key] = nil
     State.add_history(request, "cancelled", reason)
   end
+end
+
+function Platforms.fulfill(request, reason)
+  local state = State.ensure()
+  if state.active_transfers[request.id] then
+    Platforms.finish(request, "completed", reason or "Destination need is fulfilled")
+    return
+  end
+  local index = state.shipments_by_demand[request.id]
+  if index then
+    local ids = {}
+    for shipment_id in pairs(index) do ids[#ids + 1] = shipment_id end
+    table.sort(ids)
+    for _, shipment_id in ipairs(ids) do
+      local shipment = state.shipments[shipment_id]
+      if shipment and shipment.status ~= "completed" and shipment.status ~= "failed"
+        and shipment.status ~= "cancelled" then
+        Platforms.cancel_shipment(shipment_id, reason or "Destination need is fulfilled")
+      end
+    end
+  end
+  Platforms.remove_pad_section(request.id)
+  request.amount = 0
+  request.observed_shortage = 0
+  request.active_shipment_amount = 0
+  request.unplanned_amount = 0
+  request.status = "completed"
+  request.completed_tick = game.tick
+  request.last_reason = reason or "Destination need is fulfilled"
+  state.request_by_key[request.key] = nil
+  state.suppressions[request.key] = nil
+  State.add_history(request, "completed", request.last_reason)
 end
 
 -- ---------------------------------------------------------------------------
@@ -626,13 +679,58 @@ local function demand_request(demand)
   }
 end
 
+local function signal_quality_name(signal)
+  local quality = signal and signal.quality
+  if type(quality) == "table" or type(quality) == "userdata" then
+    return quality.name or "normal"
+  end
+  return quality or "normal"
+end
+
+local function shipment_record_matches(record, shipment, station, allows_unloading, comparator, constant)
+  if not record or not record.temporary or record.station ~= station
+    or record.allows_unloading ~= allows_unloading then
+    return false
+  end
+  local wait = record.wait_conditions and record.wait_conditions[1]
+  local condition = wait and wait.condition
+  local signal = condition and condition.first_signal
+  return wait and wait.type == "item_count"
+    and condition and condition.comparator == comparator and condition.constant == constant
+    and signal and signal.type == "item" and signal.name == shipment.item
+    and signal_quality_name(signal) == (shipment.quality or "normal")
+end
+
+local function is_shipment_temporary_record(record, shipment)
+  if shipment_record_matches(record, shipment, shipment.destination, true, "<=", shipment.baseline_count) then
+    return true
+  end
+  for _, leg in ipairs(shipment.pickup_legs or {}) do
+    if shipment_record_matches(record, shipment, leg.source, false, ">=",
+      (shipment.baseline_count or 0) + (leg.cumulative_target or 0)) then
+      return true
+    end
+  end
+  return false
+end
+
+local function has_shipment_destination_record(platform, shipment)
+  local schedule = platform and platform.schedule
+  for _, record in ipairs(schedule and schedule.records or {}) do
+    if shipment_record_matches(record, shipment, shipment.destination, true, "<=", shipment.baseline_count) then
+      return true
+    end
+  end
+  return false
+end
+
 local function remove_shipment_temporary_records(platform, shipment)
   local schedule = platform.schedule
   if not schedule then return end
   local records = schedule.records or {}
   for index = #records, 1, -1 do
     local record = records[index]
-    if record.temporary and record.shipment_id == shipment.id then
+    if is_shipment_temporary_record(record, shipment) then
       table.remove(records, index)
     end
   end
@@ -767,7 +865,6 @@ function Platforms.execute_shipment(shipment, force)
     local record = {
       station = leg.source,
       temporary = true,
-      shipment_id = shipment.id,
       allows_unloading = false,
       wait_conditions = {
         item_condition(shipment_request(shipment), ">=", hub_baseline + leg.cumulative_target)
@@ -784,7 +881,6 @@ function Platforms.execute_shipment(shipment, force)
   local destination_record = {
     station = shipment.destination,
     temporary = true,
-    shipment_id = shipment.id,
     allows_unloading = true,
     wait_conditions = {
       item_condition(shipment_request(shipment), "<=", hub_baseline)
@@ -799,6 +895,12 @@ function Platforms.execute_shipment(shipment, force)
   shipment.original_schedule_current = original_current
   shipment.pad_unit_number = pad_record.pad_unit_number
   shipment.pad_section_index = pad_record.pad_section_index
+  shipment.pad_baseline_count = pad_record.pad_baseline_count
+  shipment.destination_baseline_current = demand.current or 0
+  shipment.destination_baseline_shortage = demand.observed_shortage or demand.amount or 0
+  shipment.destination_observation_tick = demand.last_seen_tick or game.tick
+  shipment.max_loaded_amount = 0
+  shipment.delivered_amount = 0
   shipment.status = "loading"
   shipment.started_tick = game.tick
 
@@ -915,13 +1017,24 @@ function Platforms.finish_shipment(shipment_id, status, reason)
   if active_shipment_count(state, demand_id) == 0 then
     Platforms.remove_pad_section(demand_id)
     if demand then
-      if status == "completed" then
+      if status == "completed" and (demand.observed_shortage or 0) <= 0 then
         demand.status = "completed"
         demand.completed_tick = game.tick
         demand.last_reason = nil
         state.demand_by_key[demand.key] = nil
       elseif status == "failed" and demand.unplanned_amount > 0 then
         demand.status = "approved"
+      elseif status == "completed" and demand.unplanned_amount > 0 then
+        local observation_advanced = demand.last_seen_tick
+          and demand.last_seen_tick > (shipment.destination_observation_tick or shipment.started_tick or 0)
+        if observation_advanced then
+          demand.status = "approved"
+          demand.last_reason = "Partial delivery confirmed; remainder awaiting routing"
+        else
+          demand.status = "dispatching"
+          demand.reconcile_pending = true
+          demand.last_reason = "Delivery confirmed; awaiting destination reconciliation"
+        end
       end
     end
   end
@@ -934,26 +1047,7 @@ function Platforms.check_local_fulfillment(demand)
   if (demand.observed_shortage or 0) > 0 then
     return false
   end
-  local state = State.ensure()
-  Platforms.remove_pad_section(demand.id)
-  local index = state.shipments_by_demand[demand.id]
-  if index then
-    local ids = {}
-    for shipment_id in pairs(index) do
-      ids[#ids + 1] = shipment_id
-    end
-    table.sort(ids)
-    for _, shipment_id in ipairs(ids) do
-      local shipment = state.shipments[shipment_id]
-      if shipment and shipment.status ~= "completed" and shipment.status ~= "cancelled"
-        and shipment.status ~= "failed" then
-        Platforms.cancel_shipment(shipment_id, "local logistics fulfilled demand")
-      end
-    end
-  end
-  demand.status = "completed"
-  demand.completed_tick = game.tick
-  demand.last_reason = "Fulfilled by local logistics"
+  Platforms.fulfill(demand, "Fulfilled by local logistics")
   return true
 end
 
@@ -978,6 +1072,7 @@ function Platforms.start_shipment_execution()
       ids[#ids + 1] = shipment_id
     end
   end
+  if #ids == 0 then return false end
   table.sort(ids)
   state.shipment_execution_job = {ids = ids, index = 1}
   return true
@@ -1084,6 +1179,20 @@ local function update_pickup_leg_status(shipment, platform, hub_count)
   end
 end
 
+local function destination_received_amount(shipment, demand, pad)
+  local received = 0
+  if pad and pad.valid and pad.get_item_count then
+    local pad_count = pad.get_item_count(Util.item_id(shipment.item, shipment.quality))
+    received = math.max(received, pad_count - (shipment.pad_baseline_count or pad_count))
+  end
+  if demand then
+    received = math.max(received, (demand.current or 0) - (shipment.destination_baseline_current or 0))
+    received = math.max(received,
+      (shipment.destination_baseline_shortage or demand.observed_shortage or 0) - (demand.observed_shortage or 0))
+  end
+  return math.max(0, math.min(shipment.amount or 0, received))
+end
+
 function Platforms.maintain_shipment(shipment_id)
   local state = State.ensure()
   local shipment = state.shipments[shipment_id]
@@ -1121,8 +1230,20 @@ function Platforms.maintain_shipment(shipment_id)
 
   local item_id = Util.item_id(shipment.item, shipment.quality)
   local hub_count = inventory.get_item_count(item_id)
+  shipment.max_loaded_amount = math.max(shipment.max_loaded_amount or 0,
+    math.max(0, hub_count - (shipment.baseline_count or hub_count)))
   local cumulative_target = shipment.baseline_count + shipment_cumulative_target(shipment)
   local location = platform.space_location and platform.space_location.name
+
+  local pad = shipment.pad_unit_number and game.get_entity_by_unit_number(shipment.pad_unit_number)
+  if not pad or not pad.valid then
+    Platforms.finish_shipment(shipment_id, "failed", "destination landing pad is no longer available")
+    return
+  end
+  if location ~= shipment.destination and not has_shipment_destination_record(platform, shipment) then
+    Platforms.finish_shipment(shipment_id, "failed", "shipment destination schedule record is missing")
+    return
+  end
 
   -- 5. Has the shipment timed out?
   if shipment.started_tick and game.tick - shipment.started_tick > Constants.transfer_timeout then
@@ -1141,29 +1262,27 @@ function Platforms.maintain_shipment(shipment_id)
       return
     end
 
-    -- 6. Is the platform stuck at a source but not loading?
-    -- If the platform is at a source that is not the current leg's source,
-    -- or has left a source with partial cargo, continue to next source
-    -- The schedule records handle the routing; we just check for stuck conditions
-    -- If the platform is at the destination while still loading, it's a short pickup
     if location == shipment.destination then
-      -- Platform reached destination without full cargo — short pickup
-      -- Check if cargo was delivered (hub count <= baseline)
-      if hub_count <= shipment.baseline_count then
-        -- No cargo was loaded at all
-        Platforms.finish_shipment(shipment_id, "failed", "platform reached destination without cargo")
-      else
-        -- Partial delivery: deliver what was loaded, return remainder to demand
-        Platforms.finish_shipment(shipment_id, "completed", "partial delivery completed")
-      end
+      shipment.status = "delivering"
+      shipment.destination_arrival_tick = shipment.destination_arrival_tick or game.tick
+      if demand then demand.status = "delivering" end
       return
     end
   elseif shipment.status == "delivering" then
     -- 4. Has the cargo been delivered? (platform at destination AND hub count <= baseline)
     if platform_at_location(platform, shipment.destination) then
       if hub_count <= shipment.baseline_count then
-        Platforms.finish_shipment(shipment_id, "completed", "cargo delivered to destination")
-        return
+        local delivered_amount = destination_received_amount(shipment, demand, pad)
+        if delivered_amount > 0 then
+          shipment.delivered_amount = delivered_amount
+          Platforms.finish_shipment(shipment_id, "completed", "cargo delivered to destination")
+          return
+        end
+        if shipment.destination_arrival_tick
+          and game.tick - shipment.destination_arrival_tick > Constants.delivery_confirmation_timeout then
+          Platforms.finish_shipment(shipment_id, "failed", "destination receipt was not confirmed")
+          return
+        end
       end
       -- Platform at destination but cargo not yet unloaded; keep waiting
     end

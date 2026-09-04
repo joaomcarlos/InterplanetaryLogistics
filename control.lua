@@ -119,36 +119,29 @@ local function on_upgraded(event)
   end
 end
 
-local function on_chest_logistic_slot_changed(event)
-  local entity = event.entity
-  if not entity or not entity.valid or entity.name ~= Constants.chest_name then return end
-  if not entity.unit_number then return end
-  Demands.mark_chest_dirty(entity.unit_number)
-end
-
-local function on_platform_logistic_slot_changed(event)
-  local entity = event.entity
-  if not entity or not entity.valid then return end
-  -- Mark shipments dirty for platforms whose hub or pad logistic slots change
+local function mark_pad_shipments(pad_unit_number)
+  if not pad_unit_number then return end
   local state = State.ensure()
-  if entity.type == "cargo-landing-pad" and entity.unit_number then
-    for _, demand in pairs(state.demands) do
-      local pad_record = state.pad_sections[demand.id]
-      if pad_record and pad_record.pad_unit_number == entity.unit_number then
-        local index = state.shipments_by_demand[demand.id]
-        if index then
-          for shipment_id in pairs(index) do
-            Platforms.mark_shipment_dirty(shipment_id)
-          end
-        end
+  local demand_ids = {}
+  for demand_id in pairs(state.demands or {}) do demand_ids[#demand_ids + 1] = demand_id end
+  table.sort(demand_ids)
+  for _, demand_id in ipairs(demand_ids) do
+    local demand = state.demands[demand_id]
+    local pad_record = state.pad_sections[demand_id]
+    if pad_record and pad_record.pad_unit_number == pad_unit_number then
+      Demands.mark_demand_dirty(demand)
+      local index = state.shipments_by_demand[demand_id]
+      local shipment_ids = {}
+      for shipment_id in pairs(index or {}) do shipment_ids[#shipment_ids + 1] = shipment_id end
+      table.sort(shipment_ids)
+      for _, shipment_id in ipairs(shipment_ids) do
+        Platforms.mark_shipment_dirty(shipment_id)
       end
     end
   end
 end
 
-local function on_platform_state_changed(event)
-  -- When a platform changes state (arrives/leaves), mark related shipments dirty
-  local platform = event.platform or event.entity
+local function mark_platform_shipments(platform)
   if not platform then return end
   local state = State.ensure()
   local shipment_id = state.platform_shipments[platform.index]
@@ -157,35 +150,49 @@ local function on_platform_state_changed(event)
   end
 end
 
-local function on_cargo_pod_arrived(event)
-  -- When cargo arrives at a platform or landing pad, mark related shipments dirty
-  local entity = event.entity or event.pod
+local function on_entity_logistic_slot_changed(event)
+  local entity = event.entity
   if not entity or not entity.valid then return end
-  local state = State.ensure()
-  if entity.type == "cargo-landing-pad" and entity.unit_number then
-    for _, demand in pairs(state.demands) do
-      local pad_record = state.pad_sections[demand.id]
-      if pad_record and pad_record.pad_unit_number == entity.unit_number then
-        local index = state.shipments_by_demand[demand.id]
-        if index then
-          for shipment_id in pairs(index) do
-            Platforms.mark_shipment_dirty(shipment_id)
-          end
+  if entity.name == Constants.chest_name and entity.unit_number then
+    Demands.mark_chest_dirty(entity.unit_number)
+  elseif entity.type == "cargo-landing-pad" then
+    mark_pad_shipments(entity.unit_number)
+  elseif entity.type == "space-platform-hub" or entity.type == "hub" then
+    for _, force in pairs(game.forces or {}) do
+      for _, platform in pairs(force.platforms or {}) do
+        if platform.hub == entity then mark_platform_shipments(platform) end
+      end
+    end
+  end
+end
+
+local function on_platform_state_changed(event)
+  -- When a platform changes state (arrives/leaves), mark related shipments dirty.
+  mark_platform_shipments(event.platform or event.entity)
+end
+
+local function on_cargo_pod_delivered_cargo(event)
+  local pod = event.cargo_pod
+  if not pod or not pod.valid then return end
+  local destination = pod.cargo_pod_destination
+  local station = destination and destination.station
+  if station and station.valid then
+    if station.type == "cargo-landing-pad" then
+      mark_pad_shipments(station.unit_number)
+    elseif station.type == "space-platform-hub" or station.type == "hub" then
+      for _, force in pairs(game.forces or {}) do
+        for _, platform in pairs(force.platforms or {}) do
+          if platform.hub == station then mark_platform_shipments(platform) end
         end
       end
     end
   end
-  -- If the entity is a space platform hub, mark its shipment dirty
-  if entity.type == "space-platform-hub" or entity.type == "hub" then
-    local force = entity.force
-    if force then
+  local origin = pod.cargo_pod_origin
+  local origin_entity = origin and (origin.station or origin)
+  if origin_entity and origin_entity.valid and (origin_entity.type == "space-platform-hub" or origin_entity.type == "hub") then
+    for _, force in pairs(game.forces or {}) do
       for _, platform in pairs(force.platforms or {}) do
-        if platform.hub == entity then
-          local shipment_id = state.platform_shipments[platform.index]
-          if shipment_id then
-            Platforms.mark_shipment_dirty(shipment_id)
-          end
-        end
+        if platform.hub == origin_entity then mark_platform_shipments(platform) end
       end
     end
   end
@@ -329,7 +336,8 @@ local function on_gui_click(event)
   id = parse_id(element.name, "il%-platform%-enrollment%-")
   if id then
     local enrolled = Platforms.is_enrolled(player.force.index, id)
-    if enrolled and State.ensure().platform_transfers[id] then
+    local state = State.ensure()
+    if enrolled and (state.platform_shipments[id] or state.platform_transfers[id]) then
       return
     end
     enrolled = not enrolled
@@ -375,17 +383,14 @@ script.on_event(defines.events.on_robot_mined_entity, on_removed)
 script.on_event(defines.events.on_entity_died, on_removed)
 script.on_event(defines.events.script_raised_destroy, on_removed)
 
-script.on_event(defines.events.on_entity_logistic_slot_changed, on_chest_logistic_slot_changed)
+script.on_event(defines.events.on_entity_logistic_slot_changed, on_entity_logistic_slot_changed)
 
--- Factorio 2.0 Space Age event handlers for shipment progress
-if defines.events.on_space_platform_state_changed then
-  script.on_event(defines.events.on_space_platform_state_changed, on_platform_state_changed)
+-- Factorio 2.1 Space Age event handlers for shipment progress
+if defines.events.on_space_platform_changed_state then
+  script.on_event(defines.events.on_space_platform_changed_state, on_platform_state_changed)
 end
-if defines.events.on_cargo_pod_arrived then
-  script.on_event(defines.events.on_cargo_pod_arrived, on_cargo_pod_arrived)
-end
-if defines.events.on_space_platform_logistic_slot_changed then
-  script.on_event(defines.events.on_space_platform_logistic_slot_changed, on_platform_logistic_slot_changed)
+if defines.events.on_cargo_pod_delivered_cargo then
+  script.on_event(defines.events.on_cargo_pod_delivered_cargo, on_cargo_pod_delivered_cargo)
 end
 
 script.on_event(defines.events.on_lua_shortcut, function(event)
@@ -426,6 +431,7 @@ script.on_event(defines.events.on_tick, function(event)
   -- normal save load skips them, so the chest/landing-pad locals in state.lua
   -- start empty. The destinations_initialized flag makes this a one-shot.
   State.ensure_destinations()
+  Demands.ensure_bootstrap()
   Scheduler.step(event.tick, settings.global["il-scan-interval"].value, Constants, {
     bootstrap_active = Demands.bootstrap_active,
     step_bootstrap = Demands.step_bootstrap,
@@ -436,6 +442,7 @@ script.on_event(defines.events.on_tick, function(event)
     shipment_dirty_active = Platforms.shipment_dirty_active,
     step_shipment_dirty = Platforms.step_shipment_dirty,
     shipment_execution_active = Platforms.shipment_execution_active,
+    start_shipment_execution = Platforms.start_shipment_execution,
     step_shipment_execution = Platforms.step_shipment_execution,
     scan_active = Demands.scan_active,
     process_active = Demands.process_active,
@@ -463,7 +470,8 @@ remote.add_interface("interplanetary_logistics", {
     Platforms.set_enrolled(force_index, platform_index, true)
   end,
   unenroll_platform = function(force_index, platform_index)
-    if not State.ensure().platform_transfers[platform_index] then
+    local state = State.ensure()
+    if not state.platform_shipments[platform_index] and not state.platform_transfers[platform_index] then
       Platforms.set_enrolled(force_index, platform_index, false)
     end
   end,

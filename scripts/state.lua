@@ -57,6 +57,25 @@ local function shipment_amount(state, demand_id)
   return total
 end
 
+local function first_active_shipment_source(state, demand_id)
+  for _, shipment_id in ipairs(sorted_keys(state.shipments_by_demand[demand_id])) do
+    local shipment = state.shipments[shipment_id]
+    if shipment and not terminal_shipment_statuses[shipment.status] then
+      local legs = shipment.pickup_legs
+      if legs and legs[1] and legs[1].source then
+        return legs[1].source
+      end
+    end
+  end
+  return nil
+end
+
+local function recompute_demand_source(state, demand_id)
+  local demand = state.demands[demand_id]
+  if not demand then return end
+  demand.source = first_active_shipment_source(state, demand_id)
+end
+
 local function find_legacy_shipment(state, transfer_id)
   for _, shipment_id in ipairs(sorted_keys(state.shipments)) do
     local shipment = state.shipments[shipment_id]
@@ -248,6 +267,24 @@ function State.ensure()
     end
   end
 
+  if previous_schema < 4 then
+    for _, demand_id in ipairs(sorted_keys(state.demands)) do
+      recompute_demand_source(state, demand_id)
+    end
+  end
+
+  if previous_schema < 5 then
+    -- Legacy transfers are now represented by Shipments. Keep the old maps
+    -- only long enough to migrate them, then remove them so stale records
+    -- cannot compete with the canonical Shipment indexes.
+    for _, transfer_id in ipairs(sorted_keys(state.active_transfers)) do
+      migrate_legacy_transfer(state, transfer_id, state.active_transfers[transfer_id])
+    end
+    state.next_shipment_id = next_id(state.shipments, state.next_shipment_id)
+    state.active_transfers = {}
+    state.platform_transfers = {}
+  end
+
   state.schema_version = Constants.schema_version
   return state
 end
@@ -292,6 +329,7 @@ function State.create_shipment(demand, platform, legs)
   add_shipment_index(state, demand.id, shipment_id)
   state.platform_shipments[platform.index] = shipment_id
   state.next_shipment_id = shipment_id + 1
+  recompute_demand_source(state, demand.id)
   return shipment
 end
 
@@ -311,6 +349,7 @@ function State.cancel_shipment(shipment_id)
   if demand then
     demand.active_shipment_amount = shipment_amount(state, demand_id)
     demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
+    recompute_demand_source(state, demand_id)
   end
   return shipment
 end
@@ -448,11 +487,13 @@ function State.delete_shipment(shipment_id)
   local state = State.ensure()
   local shipment = state.shipments[shipment_id]
   if not shipment then return end
+  local demand_id = shipment.demand_id
   state.shipments[shipment_id] = nil
-  State.remove_shipment_index(shipment.demand_id, shipment_id)
+  State.remove_shipment_index(demand_id, shipment_id)
   if state.platform_shipments[shipment.platform_index] == shipment_id then
     state.platform_shipments[shipment.platform_index] = nil
   end
+  recompute_demand_source(state, demand_id)
 end
 
 return State

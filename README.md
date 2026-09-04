@@ -1,8 +1,8 @@
 # Interplanetary Logistics
 
-[![Factorio 2.0](https://img.shields.io/badge/Factorio-2.0-EA5B0C?logo=factorio&logoColor=white)](https://www.factorio.com/)
+[![Factorio 2.1](https://img.shields.io/badge/Factorio-2.1-EA5B0C?logo=factorio&logoColor=white)](https://www.factorio.com/)
 [![Space Age required](https://img.shields.io/badge/Space%20Age-required-6F4E37)](https://www.factorio.com/space-age/content)
-![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-2F80ED)
+![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-2F80ED)
 ![Lua 5.2](https://img.shields.io/badge/Lua-5.2-2C2D72?logo=lua&logoColor=white)
 
 **Turn local logistics shortages into automated deliveries between planets.**
@@ -156,7 +156,7 @@ All three checks should finish with an `OK` result.
 
 Issues and merge requests are welcome. When proposing a change:
 
-1. Keep runtime code compatible with Factorio 2.0 and Lua 5.2.
+1. Keep runtime code compatible with Factorio 2.1 and Lua 5.2.
 2. Add or update tests for behavior changes.
 3. Run the complete verification suite before submitting the change.
 
