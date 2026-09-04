@@ -51,7 +51,7 @@ Each module owns a single responsibility. Calls flow from event-driven demand di
 - Immediate event dirty queues for chests, construction entities, and Shipments are independent. Low-priority reconciliation reads registered/tracked objects only and cannot block new requester-chest demand.
 - Roboport topology changes re-associate already tracked construction entities; they do not trigger broad surface searches.
 - `on_space_platform_changed_state`, `on_cargo_pod_delivered_cargo`, and `on_entity_logistic_slot_changed` drive immediate Shipment progress and destination observation. Bounded tracked reconciliation handles missed inventory/state transitions, with a delivery-confirmation timeout for cargo that never appears at its destination.
-- Invalid ships, pads, or schedules fail only the affected Shipment. Short pickup legs continue to later sources; partial delivery returns the remainder to the parent Demand for replanning.
+- Invalid ships, pads, or schedules fail only the affected Shipment. Short pickup legs continue to later sources; partial delivery returns the remainder to the parent Demand for replanning. Maintenance backfills missing legacy hub baselines from the current observation before doing delivery arithmetic.
 - If local logistics fulfill a Demand while cargo is moving, remove its pad request, clean up child Shipments, preserve onboard cargo, and safely restore each ship's permanent schedule position.
 - Space-platform cargo storage is the hub's `defines.inventory.hub_main` inventory; do not use `LuaEntity.get_main_inventory()` for platform hubs.
 - Quality-aware request icons use `sprite-button.quality`; never assign sprite-only `resize_to_sprite` or `stretch_image_to_widget_size` properties to a sprite button.

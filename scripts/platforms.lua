@@ -1164,12 +1164,12 @@ local function platform_at_location(platform, location)
     and platform.space_location and platform.space_location.name == location
 end
 
-local function update_pickup_leg_status(shipment, platform, hub_count)
+local function update_pickup_leg_status(shipment, platform, hub_count, baseline_count)
   local location = platform and platform.valid
     and platform.space_location and platform.space_location.name
   for _, leg in ipairs(shipment.pickup_legs or {}) do
     if leg.status == "loading" then
-      if hub_count >= shipment.baseline_count + (leg.cumulative_target or 0) then
+      if hub_count >= baseline_count + (leg.cumulative_target or 0) then
         leg.status = "completed"
       elseif location and location ~= leg.source then
         -- Platform left this source with less than planned (short pickup)
@@ -1230,9 +1230,23 @@ function Platforms.maintain_shipment(shipment_id)
 
   local item_id = Util.item_id(shipment.item, shipment.quality)
   local hub_count = inventory.get_item_count(item_id)
+  local baseline_count = tonumber(shipment.baseline_count)
+  if not baseline_count then
+    local target_count = tonumber(shipment.target_count)
+    local amount = tonumber(shipment.amount or shipment.allocated_amount)
+    if target_count and amount then
+      baseline_count = math.max(0, target_count - amount)
+    else
+      -- Older persisted Shipments did not always store a hub baseline. The
+      -- current count is the only safe observation that avoids treating
+      -- already-present cargo as newly loaded.
+      baseline_count = hub_count
+    end
+    shipment.baseline_count = baseline_count
+  end
   shipment.max_loaded_amount = math.max(shipment.max_loaded_amount or 0,
-    math.max(0, hub_count - (shipment.baseline_count or hub_count)))
-  local cumulative_target = shipment.baseline_count + shipment_cumulative_target(shipment)
+    math.max(0, hub_count - baseline_count))
+  local cumulative_target = baseline_count + shipment_cumulative_target(shipment)
   local location = platform.space_location and platform.space_location.name
 
   local pad = shipment.pad_unit_number and game.get_entity_by_unit_number(shipment.pad_unit_number)
@@ -1252,7 +1266,7 @@ function Platforms.maintain_shipment(shipment_id)
   end
 
   -- Update pickup leg statuses
-  update_pickup_leg_status(shipment, platform, hub_count)
+  update_pickup_leg_status(shipment, platform, hub_count, baseline_count)
 
   if shipment.status == "loading" then
     -- 3. Has the cargo been loaded? (hub count >= cumulative target of last leg)
@@ -1271,7 +1285,7 @@ function Platforms.maintain_shipment(shipment_id)
   elseif shipment.status == "delivering" then
     -- 4. Has the cargo been delivered? (platform at destination AND hub count <= baseline)
     if platform_at_location(platform, shipment.destination) then
-      if hub_count <= shipment.baseline_count then
+      if hub_count <= baseline_count then
         local delivered_amount = destination_received_amount(shipment, demand, pad)
         if delivered_amount > 0 then
           shipment.delivered_amount = delivered_amount

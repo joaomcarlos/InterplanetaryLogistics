@@ -3598,6 +3598,23 @@ local function test_shipment_maintenance_detects_invalid_destination_pad()
     "removed destination pad must release the assigned platform")
 end
 
+local function test_shipment_maintenance_backfills_missing_baseline_count()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 50)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+  shipment.baseline_count = nil
+  shipment.target_count = nil
+
+  env.Platforms.maintain_shipment(shipment.id)
+
+  assert_equal(shipment.baseline_count, 10,
+    "maintenance must recover a missing baseline from current hub cargo")
+  assert_equal(shipment.status, "loading",
+    "a recovered baseline must leave an unloaded Shipment in loading")
+end
+
 local function test_shipment_dirty_queue_processes_marked_shipments()
   local env = make_shipment_env()
   local demand = env.make_demand(1, 50)
@@ -4139,6 +4156,7 @@ test_shipment_without_destination_receipt_fails_for_replanning()
 test_shipment_maintenance_detects_timeout()
 test_shipment_maintenance_detects_invalid_platform()
 test_shipment_maintenance_detects_invalid_destination_pad()
+test_shipment_maintenance_backfills_missing_baseline_count()
 test_shipment_dirty_queue_processes_marked_shipments()
 test_shipment_dirty_queue_is_bounded()
 test_scheduler_priority_shipment_dirty_before_scan()
