@@ -171,11 +171,23 @@ local function on_platform_state_changed(event)
   mark_platform_shipments(event.platform or event.entity)
 end
 
+local function cargo_station(destination)
+  if not destination then return nil end
+  -- Factorio normally exposes CargoDestination as a table containing
+  -- `station`, but some 2.1 event payloads expose the station LuaEntity
+  -- directly. Do not index a LuaEntity with the table-only field.
+  if type(destination) == "table" then
+    if destination.valid ~= nil or destination.unit_number ~= nil then return destination end
+    return destination.station
+  end
+  return destination
+end
+
 local function on_cargo_pod_delivered_cargo(event)
   local pod = event.cargo_pod
   if not pod or not pod.valid then return end
   local destination = pod.cargo_pod_destination
-  local station = destination and destination.station
+  local station = cargo_station(destination)
   if station and station.valid then
     if station.type == "cargo-landing-pad" then
       mark_pad_shipments(station.unit_number)
@@ -188,7 +200,7 @@ local function on_cargo_pod_delivered_cargo(event)
     end
   end
   local origin = pod.cargo_pod_origin
-  local origin_entity = origin and (origin.station or origin)
+  local origin_entity = cargo_station(origin)
   if origin_entity and origin_entity.valid and (origin_entity.type == "space-platform-hub" or origin_entity.type == "hub") then
     for _, force in pairs(game.forces or {}) do
       for _, platform in pairs(force.platforms or {}) do

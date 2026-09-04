@@ -4748,4 +4748,26 @@ end
 test_control_registers_factorio_2_1_shipment_progress_events()
 test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
 
+local function test_control_accepts_direct_entity_cargo_pod_destination()
+  local handlers, State = load_control_event_handlers()
+  local state = State.ensure()
+  state.demands[3] = {id = 3, origin = "chest", chest_unit_number = 1}
+  state.pad_sections[3] = {pad_unit_number = 99}
+  state.shipments[42] = {id = 42, demand_id = 3, status = "delivering"}
+  state.shipments_by_demand[3] = {[42] = true}
+
+  local pad = {valid = true, type = "cargo-landing-pad", unit_number = 99}
+  handlers[defines.events.on_cargo_pod_delivered_cargo]({
+    cargo_pod = {
+      valid = true,
+      cargo_pod_destination = pad
+    }
+  })
+
+  assert_equal(state.shipment_dirty[42], true,
+    "delivered-cargo handler must accept a direct LuaEntity destination")
+end
+
+test_control_accepts_direct_entity_cargo_pod_destination()
+
 print("runtime_spec: OK")
