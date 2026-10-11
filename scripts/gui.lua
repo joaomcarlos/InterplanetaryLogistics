@@ -269,7 +269,7 @@ local function build_platform_rows(parent, player, enrolled)
     if enrolled then
       add_icon_button(controls, {
         name = "il-platform-override-" .. platform.index,
-        sprite = "utility/goto_arrow",
+        sprite = "utility/go_to_arrow",
         tooltip = {"il-gui.schedule-override"},
         toggled = Platforms.schedule_override(player.force.index, platform.index)
       })
