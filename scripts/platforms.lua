@@ -15,13 +15,6 @@ local function hub_inventory(hub)
   return hub.get_main_inventory and hub.get_main_inventory() or nil
 end
 
-local function setting_value(name, default)
-  local setting = settings and settings.global and settings.global[name]
-  if setting == nil then return default end
-  if type(setting) == "table" then return setting.value end
-  return setting
-end
-
 local function endpoint_name(endpoint)
   return endpoint and endpoint.name or nil
 end
@@ -87,17 +80,6 @@ local function item_condition(request, comparator, constant)
   }
 end
 
-local function ready_condition()
-  return {
-    type = "circuit",
-    condition = {
-      first_signal = {type = "virtual", name = setting_value("il-ready-signal", "signal-green")},
-      comparator = ">",
-      constant = 0
-    }
-  }
-end
-
 local function set_request_section(entity, request, import_from, amount)
   local sections = entity and entity.valid and entity.get_logistic_sections()
   if not sections then
@@ -136,25 +118,34 @@ local function remove_request_section(entity, section_index, request_id)
   end
 end
 
-local function find_destination_pad(request, force)
+local function resolve_landing_pad(unit_number)
+  if not unit_number then return nil end
+  -- Cargo landing pads need not expose the get-by-unit-number prototype flag.
+  local pad = State.get_landing_pads()[unit_number]
+  if pad and pad.valid then return pad end
+  return game.get_entity_by_unit_number(unit_number)
+end
+
+local function find_destination_pads(request, force)
   local surface = game.get_surface(request.destination_surface_index)
-  if not surface then
-    return nil
-  end
+  if not surface then return {} end
   local desired_network_id = request.logistic_network_id
-  local fallback
+  if desired_network_id == 0 then desired_network_id = nil end
+  local pads = {}
   for _, pad in pairs(surface.find_entities_filtered({type = "cargo-landing-pad", force = force})) do
-    fallback = fallback or pad
     local network = pad.logistic_network
       or surface.find_logistic_network_by_position(pad.position, force)
-    if desired_network_id and network and network.valid and network.network_id == desired_network_id then
-      return pad
+    if not desired_network_id
+      or (network and network.valid and network.network_id == desired_network_id) then
+      pads[#pads + 1] = pad
     end
   end
-  if desired_network_id then
-    return nil
-  end
-  return fallback
+  table.sort(pads, function(a, b) return a.unit_number < b.unit_number end)
+  return pads
+end
+
+local function find_destination_pad(request, force)
+  return find_destination_pads(request, force)[1]
 end
 
 local function platform_capacity(platform, request)
@@ -181,314 +172,25 @@ function Platforms.set_enrolled(force_index, platform_index, enrolled)
   state.enrolled[force_index][platform_index] = enrolled or nil
 end
 
-function Platforms.toggle_ready_signal(force_index, platform_index)
-  local options = State.get_platform_options(force_index, platform_index)
-  options.ready_signal = not options.ready_signal
-  return options.ready_signal
-end
-
-function Platforms.pin_routes(force_index, platform)
-  local routes = Util.route_pairs(platform)
-  local all_pinned = #routes > 0
-  for _, route in ipairs(routes) do
-    if State.get_route_preference(force_index, route.source, route.destination) ~= platform.index then
-      all_pinned = false
-      break
-    end
-  end
-  for _, route in ipairs(routes) do
-    State.set_route_preference(force_index, route.source, route.destination, all_pinned and nil or platform.index)
-  end
-  return not all_pinned
-end
-
-function Platforms.is_pinned(force_index, platform)
-  for _, route in ipairs(Util.route_pairs(platform)) do
-    if State.get_route_preference(force_index, route.source, route.destination) == platform.index then return true end
-  end
-  return false
-end
-
-function Platforms.find_matching(request, force, source, destination)
+-- Schedule override defaults to on: a dispatched ship diverts to its temporary
+-- pickup stops immediately. Disabled means the stops ride the permanent route.
+function Platforms.schedule_override(force_index, platform_index)
   local state = State.ensure()
-  local enrolled = state.enrolled[force.index] or {}
-  local matches = {}
-  local enrolled_count, idle_count, route_count, capacity_count = 0, 0, 0, 0
-  for _, platform in pairs(force.platforms) do
-    if platform.valid and enrolled[platform.index] then
-      enrolled_count = enrolled_count + 1
-      if not state.platform_shipments[platform.index] and not state.platform_transfers[platform.index] then
-        idle_count = idle_count + 1
-        local schedule = platform.schedule
-        if schedule_has_location(schedule, source) and schedule_has_location(schedule, destination) then
-          route_count = route_count + 1
-          local capacity = platform_capacity(platform, request)
-          if capacity >= request.amount then
-            capacity_count = capacity_count + 1
-            matches[#matches + 1] = {
-              platform = platform,
-              capacity = capacity,
-              eta = Platforms.estimate_ticks_to(platform, source) or math.huge,
-              pinned = State.get_route_preference(force.index, source, destination) == platform.index
-            }
-          end
-        end
-      end
-    end
-  end
-  table.sort(matches, function(a, b)
-    if a.pinned ~= b.pinned then return a.pinned end
-    if a.eta ~= b.eta then return a.eta < b.eta end
-    if a.capacity == b.capacity then
-      return a.platform.index < b.platform.index
-    end
-    return a.capacity < b.capacity
-  end)
-  if matches[1] then return matches[1].platform end
-  if enrolled_count == 0 then return nil, "No platforms are enrolled" end
-  if idle_count == 0 then return nil, "All enrolled platforms are currently delivering other requests" end
-  if route_count == 0 then return nil, "No available enrolled platform has both " .. source .. " and " .. destination .. " in its schedule" end
-  if capacity_count == 0 then return nil, "Available routed platforms do not have space for " .. request.amount .. " items" end
-  return nil, "No enrolled platform is currently eligible"
-end
-
-local function is_transfer_record(record, transfer, station, comparator, constant)
-  if not record or not record.temporary or record.station ~= station then
-    return false
-  end
-  local condition = record.wait_conditions and record.wait_conditions[1]
-  local circuit = condition and condition.condition
-  return condition and condition.type == "item_count"
-    and circuit and circuit.comparator == comparator and circuit.constant == constant
-    and circuit.first_signal and circuit.first_signal.name == transfer.item
-end
-
-local function remove_temporary_records(platform, transfer)
-  local schedule = platform.schedule
-  if not schedule then
-    return
-  end
-  local records = schedule.records or {}
-  for index = #records, 1, -1 do
-    local record = records[index]
-    if is_transfer_record(record, transfer, transfer.source, ">=", transfer.target_count)
-      or is_transfer_record(record, transfer, transfer.destination, "<=", transfer.baseline_count) then
-      table.remove(records, index)
-    end
-  end
-  if #records == 0 then
-    platform.schedule = nil
-  else
-    platform.schedule = {
-      current = math.min(transfer.original_current or 1, #records),
-      records = records
-    }
-  end
-end
-
-function Platforms.dispatch(request, platform, force)
-  local state = State.ensure()
-  local hub = platform.hub
-  local inventory = hub_inventory(hub)
-  if not inventory then
-    return false, "Platform hub has no cargo inventory"
-  end
-  local source_available = SourceStock.available(request, force, request.source, true)
-  if source_available < request.amount then
-    return false, "Source no longer has enough provider stock for " .. request.amount .. " items"
-  end
-  local pad = find_destination_pad(request, force)
-  if not pad then
-    return false, "Destination has no cargo landing pad"
-  end
-  local schedule = platform.schedule
-  if not schedule or not schedule.records or #schedule.records == 0 then
-    return false, "Platform has no schedule"
-  end
-
-  local baseline = inventory.get_item_count(Util.item_id(request.item, request.quality))
-  local target = baseline + request.amount
-  local hub_section = set_request_section(hub, request, request.source, target)
-  if not hub_section then
-    return false, "Could not add a request section to the platform hub"
-  end
-  local pad_baseline = pad.get_item_count(Util.item_id(request.item, request.quality))
-  local pad_section = set_request_section(pad, request, nil, pad_baseline + request.amount)
-  if not pad_section then
-    remove_request_section(hub, hub_section, request.id)
-    return false, "Could not add a request section to the destination landing pad"
-  end
-
-  local records = Util.deep_copy(schedule.records)
-  local source_index = #records + 1
-  records[source_index] = {
-    station = request.source,
-    temporary = true,
-    allows_unloading = false,
-    wait_conditions = {item_condition(request, ">=", target)}
-  }
-  local options = State.get_platform_options(force.index, platform.index)
-  if setting_value("il-enable-ready-signal", false) or options.ready_signal then
-    records[source_index].wait_conditions[#records[source_index].wait_conditions + 1] = ready_condition()
-  end
-  records[source_index].wait_conditions[#records[source_index].wait_conditions + 1] = {
-    type = "time", compare_type = "or", ticks = Constants.source_wait_timeout
-  }
-  records[source_index + 1] = {
-    station = request.destination,
-    temporary = true,
-    allows_unloading = true,
-    wait_conditions = {item_condition(request, "<=", baseline)}
-  }
-  platform.schedule = {current = source_index, records = records}
-
-  local transfer = {
-    request_id = request.id,
-    force_index = force.index,
-    platform_index = platform.index,
-    platform_name = platform.name,
-    source = request.source,
-    destination = request.destination,
-    item = request.item,
-    quality = request.quality,
-    amount = request.amount,
-    baseline_count = baseline,
-    target_count = target,
-    original_current = schedule.current,
-    hub_section_index = hub_section,
-    pad_unit_number = pad.unit_number,
-    pad_section_index = pad_section,
-    pad_baseline_count = pad_baseline,
-    started_tick = game.tick,
-    loaded_full = false
-  }
-  state.active_transfers[request.id] = transfer
-  state.platform_transfers[platform.index] = request.id
-  request.platform_index = platform.index
-  request.platform_name = platform.name
-  request.status = "loading"
-  request.dispatched_tick = game.tick
-  request.last_reason = nil
-  request.eta_tick = game.tick + (Platforms.estimate_ticks_to(platform, request.destination) or Constants.default_leg_ticks)
+  local entry = state.schedule_override[force_index]
+  if entry and entry[platform_index] ~= nil then return entry[platform_index] end
   return true
 end
 
-function Platforms.finish(request, status, reason)
+function Platforms.set_schedule_override(force_index, platform_index, enabled)
   local state = State.ensure()
-  local transfer = state.active_transfers[request.id]
-  if transfer then
-    local force = game.forces[transfer.force_index]
-    local platform = Util.get_platform(force, transfer.platform_index)
-    if platform then
-      remove_temporary_records(platform, transfer)
-      if platform.hub and platform.hub.valid then
-        remove_request_section(platform.hub, transfer.hub_section_index, request.id)
-      end
-    end
-    local pad = transfer.pad_unit_number and game.get_entity_by_unit_number(transfer.pad_unit_number)
-    if pad then
-      remove_request_section(pad, transfer.pad_section_index, request.id)
-    end
-    state.platform_transfers[transfer.platform_index] = nil
-    state.active_transfers[request.id] = nil
-    if status == "completed" and transfer.baseline_count > 0 then
-      state.recent_returns[transfer.platform_index] = {
-        item = transfer.item,
-        quality = transfer.quality,
-        amount = transfer.baseline_count,
-        source = transfer.source,
-        expires_tick = game.tick + Constants.default_leg_ticks * 2
-      }
-    end
-  end
-
-  request.status = status
-  request.completed_tick = game.tick
-  request.last_reason = reason
-  if status ~= "denied" then
-    state.demand_by_key[request.key] = nil
-  end
-  local metric_key = request.source
-  if metric_key then
-    local metrics = state.source_metrics[metric_key] or {successes = 0, failures = 0}
-    if status == "completed" then
-      metrics.successes = metrics.successes + 1
-    elseif status == "failed" then
-      metrics.failures = metrics.failures + 1
-    end
-    state.source_metrics[metric_key] = metrics
-  end
-  State.add_history(request, status, reason)
+  state.schedule_override[force_index] = state.schedule_override[force_index] or {}
+  state.schedule_override[force_index][platform_index] = enabled
 end
 
-local function monitor_transfer(state, request_id)
-  local request = state.demands[request_id]
-  local transfer = state.active_transfers[request_id]
-  if not request or not transfer then
-    state.active_transfers[request_id] = nil
-    if transfer then state.platform_transfers[transfer.platform_index] = nil end
-  else
-    local force = game.forces[transfer.force_index]
-    local platform = Util.get_platform(force, transfer.platform_index)
-    if not platform or not platform.hub or not platform.hub.valid then
-      Platforms.finish(request, "failed", "Enrolled platform is no longer available")
-    else
-      local inventory = hub_inventory(platform.hub)
-      local count = inventory and inventory.get_item_count(Util.item_id(request.item, request.quality)) or 0
-      local location = platform.space_location and platform.space_location.name
-      if count >= transfer.target_count then
-        transfer.loaded_full = true
-        request.status = "delivering"
-      elseif location == transfer.destination and count <= transfer.baseline_count then
-        if transfer.loaded_full then
-          Platforms.finish(request, "completed", "Cargo delivered to destination")
-        else
-          Platforms.finish(request, "failed", "Platform reached the destination without the full cargo")
-        end
-      elseif game.tick - transfer.started_tick > Constants.transfer_timeout then
-        Platforms.finish(request, "failed", "Transfer timed out")
-      end
-    end
-  end
-end
-
-function Platforms.start_monitor()
-  local state = State.ensure()
-  local ids = {}
-  for request_id in pairs(state.active_transfers) do
-    ids[#ids + 1] = request_id
-  end
-  table.sort(ids)
-  state.monitor_job = {ids = ids, index = 1}
-  return true
-end
-
-function Platforms.monitor_active()
-  return State.ensure().monitor_job ~= nil
-end
-
-function Platforms.step_monitor(budget)
-  local state = State.ensure()
-  local job = state.monitor_job
-  if not job then return true end
-  budget = math.max(1, budget or Constants.monitor_work_per_tick)
-  local processed = 0
-  while processed < budget do
-    local request_id = job.ids[job.index]
-    if not request_id then
-      state.monitor_job = nil
-      break
-    end
-    monitor_transfer(state, request_id)
-    job.index = job.index + 1
-    processed = processed + 1
-  end
-  return state.monitor_job == nil
-end
-
-function Platforms.monitor()
-  Platforms.start_monitor()
-  while Platforms.monitor_active() do Platforms.step_monitor(math.huge) end
+local function comparator_matches(actual, expected)
+  return actual == expected
+    or (actual == "≥" and expected == ">=")
+    or (actual == "≤" and expected == "<=")
 end
 
 local function platform_snapshot(platform, force_index)
@@ -496,7 +198,7 @@ local function platform_snapshot(platform, force_index)
   local previous = state.platform_status[platform.index]
   local shipment_id = state.platform_shipments[platform.index]
   local shipment = shipment_id and state.shipments[shipment_id]
-  local request_id = shipment and shipment.demand_id or state.platform_transfers[platform.index]
+  local request_id = shipment and shipment.demand_id
   local request = request_id and state.demands[request_id]
   local location = platform.space_location and platform.space_location.name
   local distance = platform.distance
@@ -518,14 +220,6 @@ local function platform_snapshot(platform, force_index)
     local schedule = platform.schedule
     local record = schedule and schedule.records and schedule.records[schedule.current or 1]
     destination = record and record.station or nil
-  elseif state.recent_returns[platform.index] then
-    local returning = state.recent_returns[platform.index]
-    if game.tick <= returning.expires_tick and location ~= returning.source then
-      status = "returning"
-      destination = returning.source
-    else
-      state.recent_returns[platform.index] = nil
-    end
   end
   if request and game.tick - last_progress_tick > Constants.stuck_timeout then status = "stuck" end
   return {
@@ -600,36 +294,25 @@ end
 
 function Platforms.cancel(request, reason)
   local state = State.ensure()
-  -- Legacy active_transfers path: pre-shipment transfers created by
-  -- Platforms.dispatch use a different cleanup path via Platforms.finish.
-  -- After schema-5 migration active_transfers is empty, so this branch is
-  -- only reached for saves that still have unmigrated legacy transfers.
-  if state.active_transfers[request.id] then
-    Platforms.finish(request, "cancelled", reason or "Request removed")
-  else
-    -- Cancel all shipments belonging to this demand so platforms, hub
-    -- sections, pad sections, and temporary schedule records are released.
-    -- Without this, retiring an active demand (e.g. when a construction
-    -- ghost is built or removed) orphans shipments and blocks platforms.
-    State.for_each_sorted_shipment(request.id, function(shipment_id)
-      Platforms.cancel_shipment(shipment_id, reason or "Request removed")
-    end)
-    Platforms.remove_pad_section(request.id)
-    request.status = "cancelled"
-    request.completed_tick = game.tick
-    request.last_reason = reason
-    state.demand_by_key[request.key] = nil
-    State.add_history(request, "cancelled", reason)
-  end
+  -- Cancel all shipments belonging to this demand so platforms, hub
+  -- sections, pad sections, and temporary schedule records are released.
+  -- Without this, retiring an active demand (e.g. when a construction
+  -- ghost is built or removed) orphans shipments and blocks platforms.
+  State.for_each_sorted_shipment(request.id, function(shipment_id)
+    Platforms.cancel_shipment(shipment_id, reason or "Request removed")
+  end)
+  Platforms.remove_pad_section(request.id)
+  State.set_status(request, "cancelled")
+  Util.alert_force(request.force_index, Util.alert_entity(request),
+    Util.approval_icon, Util.approval_message(request), true)
+  request.completed_tick = game.tick
+  request.last_reason = reason
+  state.demand_by_key[request.key] = nil
+  State.add_history(request, "cancelled", reason)
 end
 
 function Platforms.fulfill(request, reason)
   local state = State.ensure()
-  -- Legacy active_transfers path (see Platforms.cancel for rationale).
-  if state.active_transfers[request.id] then
-    Platforms.finish(request, "completed", reason or "Destination need is fulfilled")
-    return
-  end
   State.for_each_sorted_shipment(request.id, function(shipment_id, shipment)
     if shipment.status ~= "completed" and shipment.status ~= "failed"
       and shipment.status ~= "cancelled" then
@@ -641,7 +324,9 @@ function Platforms.fulfill(request, reason)
   request.observed_shortage = 0
   request.active_shipment_amount = 0
   request.unplanned_amount = 0
-  request.status = "completed"
+  State.set_status(request, "completed")
+  Util.alert_force(request.force_index, Util.alert_entity(request),
+    Util.approval_icon, Util.approval_message(request), true)
   request.completed_tick = game.tick
   request.last_reason = reason or "Destination need is fulfilled"
   state.demand_by_key[request.key] = nil
@@ -688,8 +373,8 @@ local function shipment_record_matches(record, shipment, station, allows_unloadi
   local condition = wait and wait.condition
   local signal = condition and condition.first_signal
   return wait and wait.type == "item_count"
-    and condition and condition.comparator == comparator and condition.constant == constant
-    and signal and signal.type == "item" and signal.name == shipment.item
+    and condition and comparator_matches(condition.comparator, comparator) and condition.constant == constant
+    and signal and (signal.type == nil or signal.type == "item") and signal.name == shipment.item
     and signal_quality_name(signal) == (shipment.quality or "normal")
 end
 
@@ -720,12 +405,17 @@ local function remove_shipment_temporary_records(platform, shipment)
   local schedule = platform.schedule
   if not schedule then return end
   local records = schedule.records or {}
+  local removed = false
   for index = #records, 1, -1 do
     local record = records[index]
     if is_shipment_temporary_record(record, shipment) then
       table.remove(records, index)
+      removed = true
     end
   end
+  -- A failed dispatch may never have installed any records. Do not redirect
+  -- a ship whose schedule was untouched, or whose temporary stops are gone.
+  if not removed then return end
   if #records == 0 then
     platform.schedule = nil
   else
@@ -754,37 +444,35 @@ function Platforms.ensure_pad_section(demand, force)
   local state = State.ensure()
   local existing = state.pad_sections[demand.id]
   if existing then
-    local pad = existing.pad_unit_number and game.get_entity_by_unit_number(existing.pad_unit_number)
+    local pad = resolve_landing_pad(existing.pad_unit_number)
     if pad and pad.valid then
       return existing, pad
     end
     state.pad_sections[demand.id] = nil
   end
-  local pad = find_destination_pad(demand, force)
-  if not pad then
-    return nil, nil
+  for _, pad in ipairs(find_destination_pads(demand, force)) do
+    local pad_baseline = pad.get_item_count(Util.item_id(demand.item, demand.quality))
+    local target = pad_baseline + (demand.observed_shortage or demand.amount or 0)
+    local section_index = set_request_section(pad, demand_request(demand), nil, target)
+    if section_index then
+      local record = {
+        pad_unit_number = pad.unit_number,
+        pad_section_index = section_index,
+        pad_baseline_count = pad_baseline,
+        target = target
+      }
+      state.pad_sections[demand.id] = record
+      return record, pad
+    end
   end
-  local pad_baseline = pad.get_item_count(Util.item_id(demand.item, demand.quality))
-  local target = pad_baseline + (demand.observed_shortage or demand.amount or 0)
-  local section_index = set_request_section(pad, demand_request(demand), nil, target)
-  if not section_index then
-    return nil, nil
-  end
-  local record = {
-    pad_unit_number = pad.unit_number,
-    pad_section_index = section_index,
-    pad_baseline_count = pad_baseline,
-    target = target
-  }
-  state.pad_sections[demand.id] = record
-  return record, pad
+  return nil, nil
 end
 
 function Platforms.remove_pad_section(demand_id)
   local state = State.ensure()
   local record = state.pad_sections[demand_id]
   if not record then return end
-  local pad = record.pad_unit_number and game.get_entity_by_unit_number(record.pad_unit_number)
+  local pad = resolve_landing_pad(record.pad_unit_number)
   if pad and pad.valid then
     remove_request_section(pad, record.pad_section_index, demand_id)
   end
@@ -852,7 +540,6 @@ function Platforms.execute_shipment(shipment, force)
   -- Append temporary schedule records (never mutate permanent records)
   local records = Util.deep_copy(schedule.records)
   local first_source_index = #records + 1
-  local options = State.get_platform_options(force.index, platform.index)
   for _, leg in ipairs(shipment.pickup_legs) do
     local record = {
       station = leg.source,
@@ -862,9 +549,6 @@ function Platforms.execute_shipment(shipment, force)
         item_condition(shipment_request(shipment), ">=", hub_baseline + leg.cumulative_target)
       }
     }
-    if setting_value("il-enable-ready-signal", false) or options.ready_signal then
-      record.wait_conditions[#record.wait_conditions + 1] = ready_condition()
-    end
     record.wait_conditions[#record.wait_conditions + 1] = {
       type = "time", compare_type = "or", ticks = Constants.source_wait_timeout
     }
@@ -879,7 +563,11 @@ function Platforms.execute_shipment(shipment, force)
     }
   }
   records[#records + 1] = destination_record
-  platform.schedule = {current = first_source_index, records = records}
+  local target_index = first_source_index
+  if not Platforms.schedule_override(shipment.force_index, platform.index) then
+    target_index = original_current or 1
+  end
+  platform.schedule = {current = target_index, records = records}
 
   -- Store execution metadata
   shipment.baseline_count = hub_baseline
@@ -897,7 +585,7 @@ function Platforms.execute_shipment(shipment, force)
   shipment.started_tick = game.tick
 
   if demand.status ~= "loading" and demand.status ~= "delivering" then
-    demand.status = "loading"
+    State.set_status(demand, "loading")
   end
   return true
 end
@@ -916,7 +604,7 @@ function Platforms.execute_pending_shipments(force)
     if shipment and shipment.status == "planned" then
       local ok, reason = Platforms.execute_shipment(shipment, force)
       if not ok then
-        Platforms.cancel_shipment(shipment_id, reason or "execution failed")
+        Platforms.finish_shipment(shipment_id, "failed", reason or "execution failed")
       end
     end
   end
@@ -947,7 +635,7 @@ function Platforms.cancel_shipment(shipment_id, reason)
     demand.active_shipment_amount = State.active_shipment_amount(demand_id)
     demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
     if demand.unplanned_amount > 0 and demand.status ~= "completed" and demand.status ~= "cancelled" then
-      demand.status = "approved"
+      State.set_status(demand, "approved")
     end
   end
 end
@@ -993,38 +681,62 @@ function Platforms.finish_shipment(shipment_id, status, reason)
     demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
   end
   -- Update source metrics
+  local metric_item_key = tostring(shipment.item) .. "|" .. tostring(shipment.quality or "normal")
   for _, leg in ipairs(shipment.pickup_legs or {}) do
     local metric_key = leg.source
     if metric_key then
       local metrics = state.source_metrics[metric_key] or {successes = 0, failures = 0}
       if status == "completed" then
         metrics.successes = metrics.successes + 1
+        if leg.status == "completed" and (leg.planned_amount or 0) > 0 then
+          metrics.provided = (metrics.provided or 0) + leg.planned_amount
+          metrics.items = metrics.items or {}
+          metrics.items[metric_item_key] = (metrics.items[metric_item_key] or 0) + leg.planned_amount
+        end
       elseif status == "failed" then
         metrics.failures = metrics.failures + 1
       end
       state.source_metrics[metric_key] = metrics
     end
   end
+  if status == "completed" and shipment.destination then
+    local delivered = shipment.allocated_amount or shipment.amount or 0
+    local metrics = state.destination_metrics[shipment.destination] or {delivered = 0, items = {}}
+    metrics.delivered = (metrics.delivered or 0) + delivered
+    metrics.items = metrics.items or {}
+    metrics.items[metric_item_key] = (metrics.items[metric_item_key] or 0) + delivered
+    state.destination_metrics[shipment.destination] = metrics
+    local delivered_icon = {type = "item", name = shipment.item}
+    if prototypes and prototypes.space_location
+      and prototypes.space_location[shipment.destination] then
+      delivered_icon = {type = "space-location", name = shipment.destination}
+    end
+    Util.alert_force(shipment.force_index,
+      resolve_landing_pad(shipment.pad_unit_number) or Util.alert_entity(demand),
+      delivered_icon,
+      {"il-gui.alert-delivered", shipment.item or "?", Util.location_rich(shipment.destination) or "?"})
+  end
   -- Remove pad section if no more active shipments for this demand
   if active_shipment_count(state, demand_id) == 0 then
     Platforms.remove_pad_section(demand_id)
     if demand then
       if status == "completed" and (demand.observed_shortage or 0) <= 0 then
-        demand.status = "completed"
+        State.set_status(demand, "completed")
         demand.completed_tick = game.tick
         demand.last_reason = nil
         state.demand_by_key[demand.key] = nil
       elseif status == "failed" and demand.unplanned_amount > 0 then
-        demand.status = "approved"
+        State.set_status(demand, "approved")
+        demand.last_reason = reason
       elseif status == "completed" and demand.unplanned_amount > 0 then
-        demand.status = "approved"
+        State.set_status(demand, "approved")
         demand.last_reason = "Partial delivery confirmed; remainder awaiting routing"
       end
     end
   end
   State.add_history(demand or {id = demand_id, item = shipment.item, quality = shipment.quality,
     amount = shipment.amount, source = shipment.pickup_legs and shipment.pickup_legs[1] and shipment.pickup_legs[1].source,
-    destination = shipment.destination}, status, reason)
+    destination = shipment.destination, created_tick = demand and demand.created_tick}, status, reason)
 end
 
 function Platforms.check_local_fulfillment(demand)
@@ -1084,10 +796,10 @@ function Platforms.step_shipment_execution(budget)
       if force then
         local ok, reason = Platforms.execute_shipment(shipment, force)
         if not ok then
-          Platforms.cancel_shipment(shipment_id, reason or "execution failed")
+          Platforms.finish_shipment(shipment_id, "failed", reason or "execution failed")
         end
       else
-        Platforms.cancel_shipment(shipment_id, "team no longer available")
+        Platforms.finish_shipment(shipment_id, "failed", "team no longer available")
       end
     end
     job.index = job.index + 1
@@ -1244,7 +956,7 @@ function Platforms.maintain_shipment(shipment_id)
   local cumulative_target = baseline_count + shipment_cumulative_target(shipment)
   local location = platform.space_location and platform.space_location.name
 
-  local pad = shipment.pad_unit_number and game.get_entity_by_unit_number(shipment.pad_unit_number)
+  local pad = resolve_landing_pad(shipment.pad_unit_number)
   if not pad or not pad.valid then
     Platforms.finish_shipment(shipment_id, "failed", "destination landing pad is no longer available")
     return
@@ -1267,14 +979,18 @@ function Platforms.maintain_shipment(shipment_id)
     -- 3. Has the cargo been loaded? (hub count >= cumulative target of last leg)
     if hub_count >= cumulative_target then
       shipment.status = "delivering"
-      if demand then demand.status = "delivering" end
+      Util.alert_force(shipment.force_index, platform.hub, {type = "virtual", name = "signal-check"},
+        {"il-gui.alert-loaded", shipment.item or "?", shipment.platform_name or "?"})
+      if demand then State.set_status(demand, "delivering") end
       return
     end
 
     if location == shipment.destination then
       shipment.status = "delivering"
+      Util.alert_force(shipment.force_index, platform.hub, {type = "virtual", name = "signal-check"},
+        {"il-gui.alert-loaded", shipment.item or "?", shipment.platform_name or "?"})
       shipment.destination_arrival_tick = shipment.destination_arrival_tick or game.tick
-      if demand then demand.status = "delivering" end
+      if demand then State.set_status(demand, "delivering") end
       return
     end
   elseif shipment.status == "delivering" then

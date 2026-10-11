@@ -5,8 +5,7 @@ local function routing_active(callbacks)
 end
 
 local function maintenance_active(callbacks)
-  return callbacks.monitor_active()
-    or callbacks.fleet_refresh_active()
+  return callbacks.fleet_refresh_active()
     or callbacks.gui_refresh_active()
 end
 
@@ -76,9 +75,7 @@ function Scheduler.step(event_tick, scan_interval, constants, callbacks)
   end
 
   local maintenance = maintenance_active(callbacks)
-  if event_tick % constants.monitor_interval == constants.monitor_offset then
-    if not maintenance then callbacks.start_monitor() end
-  elseif event_tick % constants.monitor_interval == constants.fleet_refresh_offset then
+  if event_tick % constants.monitor_interval == constants.fleet_refresh_offset then
     if not maintenance then callbacks.start_fleet_refresh() end
   elseif event_tick % constants.gui_refresh_interval == constants.gui_refresh_offset then
     if not maintenance then callbacks.start_gui_refresh() end
@@ -86,8 +83,6 @@ function Scheduler.step(event_tick, scan_interval, constants, callbacks)
 
   if callbacks.shipment_maintenance_active and callbacks.shipment_maintenance_active() then
     callbacks.step_shipment_maintenance(constants.shipment_maintenance_work_per_tick)
-  elseif callbacks.monitor_active() then
-    callbacks.step_monitor(constants.monitor_work_per_tick)
   elseif callbacks.fleet_refresh_active() then
     callbacks.step_fleet_refresh(constants.fleet_work_per_tick)
   elseif callbacks.gui_refresh_active() then

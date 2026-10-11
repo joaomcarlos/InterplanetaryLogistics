@@ -98,6 +98,17 @@ local function on_removed(event)
   end
 end
 
+local function on_post_entity_died(event)
+  -- Entities destroyed with ghost creation enabled produce a construction
+  -- ghost that must be rebuilt. Track it like a placed ghost so the rebuild
+  -- produces demand; re-aggregation drops it if it is not construction-
+  -- registered.
+  local ghost = event.ghost
+  if ghost and ghost.valid and is_construction_type(ghost.name) then
+    Demands.track_construction(ghost)
+  end
+end
+
 local function on_revive(event)
   local entity = event.entity or event.created_entity or event.destination
   if not entity or not entity.valid then return end
@@ -240,6 +251,20 @@ local function on_gui_click(event)
     return
   end
 
+  local locate_request = parse_id(element.name or "", "il%-request%-locate%-")
+  if locate_request then
+    local request = State.ensure().demands[locate_request]
+    if request and request.position and request.destination_surface_index then
+      player.set_controller{
+        type = defines.controllers.remote,
+        position = request.position,
+        surface = request.destination_surface_index,
+        start_zoom = 0.5
+      }
+    end
+    return
+  end
+
   local selected_request = parse_id(element.name or "", "il%-request%-select%-")
   if selected_request then
     Gui.select_request(player, selected_request)
@@ -349,7 +374,7 @@ local function on_gui_click(event)
   if id then
     local enrolled = Platforms.is_enrolled(player.force.index, id)
     local state = State.ensure()
-    if enrolled and (state.platform_shipments[id] or state.platform_transfers[id]) then
+    if enrolled and state.platform_shipments[id] then
       return
     end
     enrolled = not enrolled
@@ -357,17 +382,12 @@ local function on_gui_click(event)
     Gui.refresh_fleet_structure(player)
     return
   end
-  id = parse_id(element.name, "il%-platform%-pin%-")
+  id = parse_id(element.name, "il%-platform%-override%-")
   if id then
-    local platform = Util.get_platform(player.force, id)
-    if platform then Platforms.pin_routes(player.force.index, platform) end
-    Gui.refresh_player(player)
+    Platforms.set_schedule_override(player.force.index, id,
+      not Platforms.schedule_override(player.force.index, id))
+    Gui.refresh_fleet_structure(player)
     return
-  end
-  id = parse_id(element.name, "il%-platform%-ready%-")
-  if id then
-    Platforms.toggle_ready_signal(player.force.index, id)
-    Gui.refresh_player(player)
   end
 end
 
@@ -393,6 +413,7 @@ end
 script.on_event(defines.events.on_player_mined_entity, on_removed)
 script.on_event(defines.events.on_robot_mined_entity, on_removed)
 script.on_event(defines.events.on_entity_died, on_removed)
+script.on_event(defines.events.on_post_entity_died, on_post_entity_died)
 script.on_event(defines.events.script_raised_destroy, on_removed)
 
 script.on_event(defines.events.on_entity_logistic_slot_changed, on_entity_logistic_slot_changed)
@@ -465,13 +486,10 @@ script.on_event(defines.events.on_tick, function(event)
     shipment_maintenance_active = Platforms.shipment_maintenance_active,
     start_shipment_maintenance = Platforms.start_shipment_maintenance,
     step_shipment_maintenance = Platforms.step_shipment_maintenance,
-    monitor_active = Platforms.monitor_active,
     fleet_refresh_active = Platforms.fleet_refresh_active,
     gui_refresh_active = Gui.refresh_active,
-    start_monitor = Platforms.start_monitor,
     start_fleet_refresh = Platforms.start_fleet_refresh,
     start_gui_refresh = Gui.start_refresh,
-    step_monitor = Platforms.step_monitor,
     step_fleet_refresh = Platforms.step_fleet_refresh,
     step_gui_refresh = Gui.step_refresh
   })
@@ -483,7 +501,7 @@ remote.add_interface("interplanetary_logistics", {
   end,
   unenroll_platform = function(force_index, platform_index)
     local state = State.ensure()
-    if not state.platform_shipments[platform_index] and not state.platform_transfers[platform_index] then
+    if not state.platform_shipments[platform_index] then
       Platforms.set_enrolled(force_index, platform_index, false)
     end
   end,

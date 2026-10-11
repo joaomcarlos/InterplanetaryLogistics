@@ -38,7 +38,35 @@ function Util.surface_location(surface)
   if surface and surface.valid and surface.planet then
     return surface.planet.name
   end
+  if surface and surface.valid and surface.platform then
+    local platform = surface.platform
+    if platform.valid then return platform.name end
+  end
   return surface and surface.name or "unknown"
+end
+
+-- Display translation for persisted location names: space-platform surfaces
+-- are named "platform-N"; show the owning platform's actual name instead.
+function Util.location_display(location)
+  if type(location) ~= "string" or not string.match(location, "^platform%-") then
+    return location
+  end
+  local surface = game.get_surface and game.get_surface(location)
+  if surface and surface.valid and surface.platform then
+    local platform = surface.platform
+    if platform.valid then return platform.name end
+  end
+  return location
+end
+
+-- Rich-text display: planet locations render as space-location icons,
+-- platform names and other locations fall back to translated text.
+function Util.location_rich(location)
+  if type(location) ~= "string" then return location end
+  if prototypes and prototypes.space_location and prototypes.space_location[location] then
+    return "[space-location=" .. location .. "]"
+  end
+  return Util.location_display(location)
 end
 
 function Util.group_destinations_by_planet(entities)
@@ -92,26 +120,6 @@ function Util.route_locations(platform)
     end
   end
   return locations
-end
-
-function Util.route_pairs(platform)
-  local locations = Util.route_locations(platform)
-  local pairs_list = {}
-  if #locations < 2 then
-    return pairs_list
-  end
-  for index, source in ipairs(locations) do
-    for _, destination in ipairs(locations) do
-      if source ~= destination then
-        pairs_list[#pairs_list + 1] = {source = source, destination = destination}
-      end
-    end
-  end
-  table.sort(pairs_list, function(a, b)
-    if a.source == b.source then return a.destination < b.destination end
-    return a.source < b.source
-  end)
-  return pairs_list
 end
 
 function Util.schedule_ordered_sources(platform, sources, destination)
@@ -186,6 +194,39 @@ end
 -- Factorio normally exposes CargoDestination as a table containing `station`,
 -- but some 2.1 event payloads expose the station LuaEntity directly. Do not
 -- index a LuaEntity with the table-only field.
+Util.approval_icon = {type = "virtual", name = "signal-deny"}
+
+function Util.approval_message(request)
+  return {"il-gui.alert-needs-approval", request.item or "?", Util.location_rich(request.destination) or "?"}
+end
+
+-- Resolve the entity a demand alert should zoom to. Uses the persisted
+-- LuaEntity ref (never surface searches), falling back to unit lookup.
+function Util.alert_entity(request)
+  if not request then return nil end
+  local entity = request.alert_entity
+  if not (entity and entity.valid) then
+    entity = request.chest_unit_number and game.get_entity_by_unit_number
+      and game.get_entity_by_unit_number(request.chest_unit_number)
+  end
+  return (entity and entity.valid) and entity or nil
+end
+
+function Util.alert_force(force_index, entity, icon, message, remove)
+  if not (entity and entity.valid) then return end
+  local force = game.forces and game.forces[force_index]
+  if not force then return end
+  for _, player in pairs(force.players or {}) do
+    if player.valid then
+      if remove and player.remove_alert then
+        player.remove_alert{entity = entity, icon = icon, message = message}
+      elseif not remove and player.add_custom_alert then
+        player.add_custom_alert(entity, icon, message, true)
+      end
+    end
+  end
+end
+
 function Util.resolve_cargo_endpoint(destination)
   if not destination then return nil end
   if type(destination) == "table" then

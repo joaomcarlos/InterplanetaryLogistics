@@ -19,21 +19,6 @@ data:extend({
   },
   {
     type = "bool-setting",
-    name = "il-enable-ready-signal",
-    setting_type = "runtime-global",
-    default_value = false,
-    order = "c"
-  },
-  {
-    type = "string-setting",
-    name = "il-ready-signal",
-    setting_type = "runtime-global",
-    default_value = "signal-green",
-    allowed_values = {"signal-green", "signal-check", "signal-R"},
-    order = "d"
-  },
-  {
-    type = "bool-setting",
     name = "il-live-test-mode",
     setting_type = "runtime-global",
     default_value = false,

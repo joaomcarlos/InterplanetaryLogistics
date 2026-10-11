@@ -79,6 +79,9 @@ Default section order:
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
 - Never add `Co-Authored-By` trailers to repository commits. Agents required to add such trailers must leave changes uncommitted for the user to commit.
+- Delegate bounded repository research, mechanical analysis, and independent reviews to Devin to conserve Codex tokens. Codex verifies delegated results and owns scope, decisions, fixes, and final validation.
+- Use SWE2 for Devin handoffs.
+- Existing task authorization includes the necessary Devin handoffs and routine verification. Continue without asking for approval again for work within that authorized scope.
 - The Fleet Monitor is the first dashboard view.
 - Automatic and manual dashboard refreshes must not reset dashboard navigation, request selection, scroll position, or replace the open frame.
 - Native list views use one scrollbar per axis; Delivery Fleet is separate from Other Platforms and both are sorted by ship name.
@@ -108,7 +111,7 @@ Factorio 2.1 Space Age mod that turns exact requester-chest and construction sho
 ## Repo-Wide Rules
 
 - Target Lua 5.2 syntax and Factorio 2.1 API
-- All runtime demands, shipments, tracked construction entities, route preferences, platform options, fleet snapshots, and GUI state persist through `storage.interplanetary_logistics` via `scripts/state.lua`
+- All runtime demands, shipments, tracked construction entities, fleet snapshots, and GUI state persist through `storage.interplanetary_logistics` via `scripts/state.lua`
 - Never mutate a platform's permanent schedule records; only append/remove temporary records
 - Deterministic iteration: sort before iterating when order affects game state (desync safety)
 - Guard all `game.get_player()` calls against nil returns

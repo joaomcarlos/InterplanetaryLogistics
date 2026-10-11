@@ -13,6 +13,14 @@ local destinations_initialized = false
 -- after code changes, so we nil them out on first State.ensure() call.
 local jobs_cleared_this_session = false
 
+-- Runtime-only fast path for State.ensure(). The full body below re-sorts
+-- every demand and shipment id and rescans history on each call, but those
+-- backstops only need to run once per session (plus on schema change, which
+-- always lands on the first call after load). Scheduler predicates invoke
+-- ensure() many times per tick, so subsequent calls return the table
+-- directly once initialization has run.
+local ensured_this_session = false
+
 local terminal_shipment_statuses = {
   cancelled = true,
   completed = true,
@@ -164,9 +172,13 @@ local function migrate_legacy_transfer(state, transfer_id, transfer)
 end
 
 function State.ensure()
-  local fresh = not storage.interplanetary_logistics
-  storage.interplanetary_logistics = storage.interplanetary_logistics or {}
   local state = storage.interplanetary_logistics
+  if ensured_this_session and state and state.schema_version == Constants.schema_version then
+    return state
+  end
+  local fresh = not state
+  storage.interplanetary_logistics = state or {}
+  state = storage.interplanetary_logistics
   local previous_schema = state.schema_version or 1
   if fresh then
     previous_schema = Constants.schema_version
@@ -174,8 +186,7 @@ function State.ensure()
 
   state.suppressions = state.suppressions or {}
   state.enrolled = state.enrolled or {}
-  state.active_transfers = state.active_transfers or {}
-  state.platform_transfers = state.platform_transfers or {}
+  state.schedule_override = state.schedule_override or {}
   state.history = state.history or {}
   state.next_history_seq = state.next_history_seq or 1
   -- Backfill seq on legacy history entries so individual clear buttons work
@@ -186,23 +197,21 @@ function State.ensure()
     end
   end
   state.source_metrics = state.source_metrics or {}
+  state.destination_metrics = state.destination_metrics or {}
   state.gui_tabs = state.gui_tabs or {}
-  state.route_preferences = state.route_preferences or {}
-  state.platform_options = state.platform_options or {}
   state.platform_status = state.platform_status or {}
-  state.recent_returns = state.recent_returns or {}
+  -- Route pinning was removed; drop the dead persisted table.
+  state.route_preferences = nil
   -- Clear stale persisted jobs and dirty queues once per session to avoid
   -- schema mismatches after code changes (e.g. new fields added to scan_job).
   if not jobs_cleared_this_session then
     state.scan_job = nil
     state.process_job = nil
-    state.monitor_job = nil
     state.fleet_job = nil
     state.gui_refresh_job = nil
     state.shipment_execution_job = nil
     state.shipment_maintenance_job = nil
     state.bootstrap_job = nil
-    state.reconciliation_job = nil
     state.chest_dirty = {}
     state.construction_dirty = {}
     state.shipment_dirty = {}
@@ -269,11 +278,37 @@ function State.ensure()
       migrate_legacy_transfer(state, transfer_id, state.active_transfers[transfer_id])
     end
     state.next_shipment_id = next_id(state.shipments, state.next_shipment_id)
-    state.active_transfers = {}
-    state.platform_transfers = {}
+    -- Drop the legacy maps entirely; nothing reads them after migration.
+    state.active_transfers = nil
+    state.platform_transfers = nil
+  end
+
+  if previous_schema < 6 then
+    -- Earlier tracking relied on global unit lookup, which excludes ghosts and
+    -- proxies without the prototype flag. Recover their references once.
+    state.tracked_construction = {}
+    state.construction_dirty = {}
+    state.bootstrap_completed = false
+    state.bootstrap_job = nil
+  end
+
+  if previous_schema < 7 then
+    -- Ghosts created by entity death were never tracked (on_post_entity_died
+    -- was unwired). Re-run the bounded bootstrap once to discover any that
+    -- still exist in the save.
+    state.tracked_construction = {}
+    state.construction_dirty = {}
+    state.bootstrap_completed = false
+    state.bootstrap_job = nil
+  end
+
+  for _, demand_id in ipairs(sorted_keys(state.demands or {})) do
+    local demand = state.demands[demand_id]
+    demand.status_tick = demand.status_tick or demand.created_tick or (game and game.tick) or 0
   end
 
   state.schema_version = Constants.schema_version
+  ensured_this_session = true
   return state
 end
 
@@ -283,6 +318,13 @@ end
 
 function State.get_shipment(shipment_id)
   return State.ensure().shipments[shipment_id]
+end
+
+function State.set_status(demand, status)
+  if demand.status ~= status then
+    demand.status = status
+    demand.status_tick = game.tick
+  end
 end
 
 function State.active_shipment_amount(demand_id)
@@ -356,31 +398,6 @@ function State.remove_shipment_index(demand_id, shipment_id)
   end
 end
 
-function State.route_key(source, destination)
-  return (source or "?") .. "->" .. (destination or "?")
-end
-
-function State.get_route_preference(force_index, source, destination)
-  local by_force = State.ensure().route_preferences[force_index] or {}
-  return by_force[State.route_key(source, destination)]
-end
-
-function State.set_route_preference(force_index, source, destination, platform_index)
-  local state = State.ensure()
-  state.route_preferences[force_index] = state.route_preferences[force_index] or {}
-  local key = State.route_key(source, destination)
-  state.route_preferences[force_index][key] = platform_index or nil
-end
-
-function State.get_platform_options(force_index, platform_index)
-  local state = State.ensure()
-  state.platform_options[force_index] = state.platform_options[force_index] or {}
-  state.platform_options[force_index][platform_index] = state.platform_options[force_index][platform_index] or {
-    ready_signal = false
-  }
-  return state.platform_options[force_index][platform_index]
-end
-
 function State.get()
   return storage.interplanetary_logistics
 end
@@ -447,6 +464,7 @@ function State.add_history(request, status, reason)
     origin = request.origin,
     status = status,
     reason = reason,
+    created_tick = request.created_tick,
     tick = game.tick
   }
   state.next_history_seq = state.next_history_seq + 1

@@ -24,6 +24,14 @@ local accent_colors = {
   muted = {r = 0.66, g = 0.66, b = 0.66}
 }
 
+-- History statuses are persisted data; unknown legacy values render verbatim
+-- rather than as an "Unknown key" caption.
+local history_statuses = {
+  queued = true, approved = true, dispatching = true, loading = true,
+  delivering = true, denied = true, completed = true, failed = true,
+  cancelled = true
+}
+
 local priority_names = {[-1] = {"il-gui.priority-low"}, [0] = {"il-gui.priority-normal"}, [1] = {"il-gui.priority-high"}}
 local request_order = {queued = 1, approved = 2, loading = 3, delivering = 4, denied = 5}
 local shipment_order = {planned = 1, loading = 2, delivering = 3, completed = 4, failed = 5, cancelled = 6}
@@ -42,27 +50,33 @@ local function layout(player)
   local detail_width = compact and 240 or 340
   local request_list_width = view_width - detail_width - 8
   local table_insets = 28 -- row/header padding plus the vertical scrollbar gutter
-  local function expand_last(widths, available)
+  -- Grow the designated flex column to fill spare space, or scale every
+  -- column down proportionally when the base widths exceed the view.
+  local function fit_widths(widths, available, expand_index)
     local total = 0
     for _, width in ipairs(widths) do total = total + width end
-    widths[#widths] = widths[#widths] + math.max(0, available - total)
+    local extra = available - total
+    if extra > 0 then
+      local index = expand_index or #widths
+      widths[index] = widths[index] + extra
+    elseif extra < 0 then
+      local scale = available / total
+      for i = 1, #widths do
+        widths[i] = math.max(28, math.floor(widths[i] * scale))
+      end
+    end
     return widths
   end
   local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
-  local request_widths = compact and {120, 75, 80, 50, 50, 60, 50, 80} or {180, 100, 120, 70, 70, 80, 65, 100}
-  local destination_widths = compact and {200, 280} or {270, 420}
-  local history_widths = compact and {180, 170, 90, 250, 40} or {250, 250, 110, 430, 40}
-  local shipment_widths = compact and {120, 44, 150, 75, 65, 60, 80} or {170, 44, 280, 100, 90, 90, 100}
-  expand_last(fleet_widths, view_width - table_insets)
-  expand_last(destination_widths, view_width - table_insets)
-  -- History: expand the result column (4th), keep the actions column (5th) fixed.
-  do
-    local total = 0
-    for _, width in ipairs(history_widths) do total = total + width end
-    history_widths[4] = history_widths[4] + math.max(0, view_width - table_insets - total)
-  end
-  expand_last(shipment_widths, view_width - table_insets)
-  expand_last(request_widths, request_list_width - table_insets)
+  local request_widths = compact and {120, 75, 80, 50, 50, 95, 50, 80} or {180, 100, 120, 70, 70, 110, 65, 100}
+  local destination_widths = compact and {110, 55, 55, 230, 140} or {150, 75, 75, 420, 160}
+  local history_widths = compact and {45, 120, 55, 115, 75, 55, 55, 160, 40} or {60, 215, 70, 205, 105, 70, 70, 300, 40}
+  local shipment_widths = compact and {120, 44, 150, 75, 70, 55, 65, 60, 80} or {170, 44, 280, 100, 95, 70, 90, 90, 100}
+  fit_widths(fleet_widths, view_width - table_insets)
+  fit_widths(destination_widths, view_width - table_insets, 4)
+  fit_widths(history_widths, view_width - table_insets, 8)
+  fit_widths(shipment_widths, view_width - table_insets)
+  fit_widths(request_widths, request_list_width - table_insets)
   return {
     frame_width = frame_width,
     frame_height = frame_height,
@@ -209,13 +223,15 @@ end
 
 local function permanent_route(platform)
   local route = Util.route_locations(platform)
+  for index, location in ipairs(route) do route[index] = Util.location_display(location) end
   return #route > 0 and table.concat(route, " → ") or {"il-gui.no-route"}
 end
 
 local function platform_task(snapshot, state)
   local request = snapshot.request_id and state.demands[snapshot.request_id]
   if not request then return {"il-gui.no-task"} end
-  return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ", request.source or "?", " → ", request.destination or "?"}
+  return {"", request.amount, " × [item=", request.item, ",quality=", request.quality or "normal", "] ",
+    Util.location_rich(request.source) or "?", " → ", Util.location_rich(request.destination) or "?"}
 end
 
 local function build_platform_rows(parent, player, enrolled)
@@ -236,9 +252,9 @@ local function build_platform_rows(parent, player, enrolled)
     set_width(status, widths[2])
     status.style.font_color = status_colors[snapshot.status] or status_colors.idle
 
-    local location = row.add({type = "label", name = "il-fleet-location-" .. platform.index, caption = snapshot.location or {"il-gui.in-transit"}})
+    local location = row.add({type = "label", name = "il-fleet-location-" .. platform.index, caption = Util.location_rich(snapshot.location) or {"il-gui.in-transit"}})
     set_width(location, widths[3])
-    local destination = row.add({type = "label", name = "il-fleet-destination-" .. platform.index, caption = snapshot.destination or "—"})
+    local destination = row.add({type = "label", name = "il-fleet-destination-" .. platform.index, caption = Util.location_rich(snapshot.destination) or "—"})
     set_width(destination, widths[4])
     local eta = row.add({type = "label", name = "il-fleet-eta-" .. platform.index, caption = snapshot.eta and Util.format_ticks(snapshot.eta) or "—"})
     set_width(eta, widths[5])
@@ -250,6 +266,14 @@ local function build_platform_rows(parent, player, enrolled)
     local controls = row.add({type = "flow", direction = "horizontal"})
     set_width(controls, widths[7])
     controls.style.horizontal_spacing = 4
+    if enrolled then
+      add_icon_button(controls, {
+        name = "il-platform-override-" .. platform.index,
+        sprite = "utility/goto_arrow",
+        tooltip = {"il-gui.schedule-override"},
+        toggled = Platforms.schedule_override(player.force.index, platform.index)
+      })
+    end
     add_icon_button(controls, {
       name = "il-platform-enrollment-" .. platform.index,
       sprite = enrolled and "utility/trash" or "utility/add",
@@ -257,21 +281,6 @@ local function build_platform_rows(parent, player, enrolled)
       style = enrolled and "il_square_tool_button_red" or "il_square_tool_button_green",
       tags = {il_action = "platform-enrollment", platform_index = platform.index}
     })
-    if enrolled then
-      local pinned = Platforms.is_pinned(player.force.index, platform)
-      add_icon_button(controls, {
-        name = "il-platform-pin-" .. platform.index, sprite = "utility/pin_center",
-        tooltip = pinned and {"il-gui.unpin"} or {"il-gui.pin-tooltip"}, toggled = pinned,
-        tags = {il_action = "platform-pin", platform_index = platform.index}
-      })
-      local ready = State.get_platform_options(player.force.index, platform.index).ready_signal
-      add_icon_button(controls, {
-        name = "il-platform-ready-" .. platform.index,
-        sprite = ready and "utility/check_mark_green" or "utility/check_mark",
-        tooltip = {"il-gui.ready-tooltip"}, toggled = ready,
-        tags = {il_action = "platform-ready", platform_index = platform.index}
-      })
-    end
   end
   if #platforms == 0 then
     parent.add({type = "label", caption = enrolled and {"il-gui.no-delivery-platforms"} or {"il-gui.no-other-platforms"}, style = "il_empty_state"})
@@ -326,7 +335,9 @@ end
 
 local function shipment_list(player)
   local shipments = Util.sorted_values(State.ensure().shipments, function(shipment)
-    return shipment.force_index == player.force.index
+    -- Completed shipments drop off the board (Transfer History is the audit
+    -- log); failed rows stay visible until cleared so blockers are triaged.
+    return shipment.force_index == player.force.index and shipment.status ~= "completed"
   end)
   table.sort(shipments, function(a, b)
     if (shipment_order[a.status] or 99) ~= (shipment_order[b.status] or 99) then
@@ -339,25 +350,51 @@ end
 
 local function shipment_counts(player)
   local state = State.ensure()
-  local total, loading, delivering, finished = 0, 0, 0, 0
+  local total, loading, delivering, failed = 0, 0, 0, 0
   for _, shipment in pairs(state.shipments or {}) do
-    if shipment.force_index == player.force.index then
+    if shipment.force_index == player.force.index and shipment.status ~= "completed" then
       total = total + 1
       if shipment.status == "loading" then loading = loading + 1
       elseif shipment.status == "delivering" then delivering = delivering + 1
-      elseif shipment.status == "completed" or shipment.status == "failed" then finished = finished + 1 end
+      elseif shipment.status == "failed" then failed = failed + 1 end
     end
   end
-  return total, loading, delivering, finished
+  return total, loading, delivering, failed
 end
 
 local function shipment_route(shipment)
   local parts = {}
   for _, leg in ipairs(shipment.pickup_legs or {}) do
-    parts[#parts + 1] = leg.source or "?"
+    parts[#parts + 1] = Util.location_rich(leg.source) or "?"
   end
-  parts[#parts + 1] = shipment.destination or "?"
+  parts[#parts + 1] = Util.location_rich(shipment.destination) or "?"
   return table.concat(parts, " → ")
+end
+
+local function shipment_age_caption(shipment)
+  if not shipment.started_tick then return "—" end
+  return Util.format_ticks(math.max(0, game.tick - shipment.started_tick))
+end
+
+local function request_status_caption(request)
+  if request.status_tick then
+    return {"", {"il-gui.request-status-" .. request.status}, " ", Util.format_ticks(math.max(0, game.tick - request.status_tick))}
+  end
+  return {"il-gui.request-status-" .. request.status}
+end
+
+local function shipment_duration_caption(shipment)
+  if not shipment.started_tick or not shipment.completed_tick then return "—" end
+  return Util.format_ticks(math.max(0, shipment.completed_tick - shipment.started_tick))
+end
+
+local function set_shipment_duration(element, shipment)
+  element.caption = shipment_duration_caption(shipment)
+  if shipment.started_tick and shipment.completed_tick then
+    element.tooltip = {"il-gui.shipment-took", Util.format_ticks(math.max(0, shipment.completed_tick - shipment.started_tick))}
+  else
+    element.tooltip = nil
+  end
 end
 
 local function build_shipment_rows(parent, player)
@@ -376,15 +413,26 @@ local function build_shipment_rows(parent, player)
     local route = row.add({type = "label", name = "il-shipment-route-" .. shipment.id, caption = shipment_route(shipment)})
     set_width(route, widths[3])
     route.style.single_line = true
-    local status = row.add({type = "label", name = "il-shipment-status-" .. shipment.id, caption = {"il-gui.shipment-status-" .. shipment.status}})
+    local status = row.add({type = "label", name = "il-shipment-status-" .. shipment.id,
+      caption = {"il-gui.shipment-status-" .. shipment.status}, tooltip = shipment.last_reason})
     set_width(status, widths[4])
     status.style.font_color = status_colors[shipment.status] or status_colors.idle
+    local age = row.add({type = "label", name = "il-shipment-age-" .. shipment.id, caption = shipment_age_caption(shipment)})
+    if shipment.started_tick then
+      age.tooltip = {"il-gui.shipment-started", Util.format_ticks(shipment.started_tick)}
+    end
+    set_width(age, widths[5])
+    age.style.font_color = accent_colors.muted
+    local duration = row.add({type = "label", name = "il-shipment-duration-" .. shipment.id})
+    set_shipment_duration(duration, shipment)
+    set_width(duration, widths[6])
+    duration.style.font_color = accent_colors.muted
     local amount = row.add({type = "label", name = "il-shipment-amount-" .. shipment.id, caption = {"", tostring(shipment.allocated_amount or 0), " / ", tostring(shipment.amount or 0)}})
-    set_width(amount, widths[5])
+    set_width(amount, widths[7])
     local demand = row.add({type = "label", name = "il-shipment-demand-" .. shipment.id, caption = tostring(shipment.demand_id or "?")})
-    set_width(demand, widths[6])
+    set_width(demand, widths[8])
     local actions = row.add({type = "flow", direction = "horizontal"})
-    set_width(actions, widths[7])
+    set_width(actions, widths[9])
     actions.style.horizontal_spacing = 4
     add_icon_button(actions, {
       name = "il-shipment-demand-link-" .. shipment.id, sprite = "utility/search",
@@ -414,18 +462,18 @@ local function build_shipments(parent, player)
     name = "il-shipments-clear-all", sprite = "utility/trash",
     tooltip = {"il-gui.clear-shipments-all"}, style = "il_square_tool_button_red"
   })
-  local total, loading, delivering, finished = shipment_counts(player)
+  local total, loading, delivering, failed = shipment_counts(player)
   add_metrics(parent, {
     {total, {"il-gui.metric-shipments-total"}, name = "il-metric-shipments-total", sprite = "utility/starmap_platform_stopped", color = accent_colors.blue},
     {loading, {"il-gui.metric-shipments-loading"}, name = "il-metric-shipments-loading", sprite = "utility/play", color = accent_colors.blue},
     {delivering, {"il-gui.metric-shipments-delivering"}, name = "il-metric-shipments-delivering", sprite = "utility/check_mark_green", color = accent_colors.green},
-    {finished, {"il-gui.metric-shipments-finished"}, name = "il-metric-shipments-finished", sprite = "utility/check_mark", color = accent_colors.muted}
+    {failed, {"il-gui.metric-shipments-failed"}, name = "il-metric-shipments-failed", sprite = "utility/close_fat", color = accent_colors.orange}
   })
   local widths = layout(player).shipments
   add_columns(parent, {
     {{"il-gui.ship"}, widths[1]}, {{"il-gui.item"}, widths[2]}, {{"il-gui.route"}, widths[3]},
-    {{"il-gui.status"}, widths[4]}, {{"il-gui.shipment-amount"}, widths[5]},
-    {{"il-gui.demand-link"}, widths[6]}, {{"il-gui.actions"}, widths[7]}
+    {{"il-gui.status"}, widths[4]}, {{"il-gui.shipment-age"}, widths[5]}, {{"il-gui.shipment-duration"}, widths[6]},
+    {{"il-gui.shipment-amount"}, widths[7]}, {{"il-gui.demand-link"}, widths[8]}, {{"il-gui.actions"}, widths[9]}
   }, "il-shipment-header")
   build_shipment_rows(add_scroll(parent, "il-shipment-list", player), player)
 end
@@ -469,11 +517,15 @@ local function build_request_rows(parent, player, attention)
     set_width(item, widths[1])
     item.style.single_line = true
     if request.id == selected_id then item.style.font_color = accent_colors.orange end
-    local source = row.add({type = "label", name = "il-request-source-" .. request.id, caption = request.source or {"il-gui.routing"}})
+    local source = row.add({type = "label", name = "il-request-source-" .. request.id,
+      caption = Util.location_rich(request.source) or (attention and request.last_reason) or {"il-gui.routing"}})
     set_width(source, widths[2])
     source.style.single_line = true
-    if not request.source then source.style.font_color = accent_colors.muted end
-    local destination = row.add({type = "label", name = "il-request-destination-" .. request.id, caption = request.destination or "?"})
+    if not request.source then
+      source.style.font_color = accent_colors.muted
+      if attention and request.last_reason then source.tooltip = request.last_reason end
+    end
+    local destination = row.add({type = "label", name = "il-request-destination-" .. request.id, caption = Util.location_rich(request.destination) or "?"})
     set_width(destination, widths[3])
     destination.style.single_line = true
     local shortage = row.add({type = "label", name = "il-request-shortage-" .. request.id, caption = tostring(request.observed_shortage or request.amount or 0)})
@@ -481,7 +533,7 @@ local function build_request_rows(parent, player, attention)
     local active = row.add({type = "label", name = "il-request-active-" .. request.id, caption = tostring(request.active_shipment_amount or 0)})
     set_width(active, widths[5])
     if (request.active_shipment_amount or 0) > 0 then active.style.font_color = accent_colors.blue end
-    local status = row.add({type = "label", name = "il-request-status-" .. request.id, caption = {"il-gui.request-status-" .. request.status}, tooltip = request.last_reason})
+    local status = row.add({type = "label", name = "il-request-status-" .. request.id, caption = request_status_caption(request), tooltip = request.last_reason})
     set_width(status, widths[6])
     status.style.font_color = status_colors[request.status] or status_colors.idle
     local shipments_count = row.add({type = "label", name = "il-request-shipments-" .. request.id, caption = tostring(demand_shipment_count(request.id))})
@@ -497,6 +549,12 @@ local function build_request_rows(parent, player, attention)
     else
       add_icon_button(actions, {name = "il-priority-down-" .. request.id, sprite = "utility/speed_down", tooltip = {"il-gui.priority-down"}})
       add_icon_button(actions, {name = "il-priority-up-" .. request.id, sprite = "utility/speed_up", tooltip = {"il-gui.priority-up"}})
+    end
+    if request.position then
+      add_icon_button(actions, {
+        name = "il-request-locate-" .. request.id, sprite = "utility/map",
+        tooltip = {"il-gui.locate"}
+      })
     end
     add_icon_button(actions, {
       name = "il-request-select-" .. request.id, sprite = "utility/search",
@@ -586,9 +644,9 @@ local function build_request_detail(parent, player)
   item_labels.add({type = "label", caption = tostring(request.amount), style = "il_muted_label"})
   parent.add({type = "line", direction = "horizontal"})
   local color = status_colors[request.status] or status_colors.idle
-  add_detail_line(parent, {"il-gui.detail-status"}, {"il-gui.request-status-" .. request.status}, color)
-  add_detail_line(parent, {"il-gui.detail-source"}, request.source or {"il-gui.routing"})
-  add_detail_line(parent, {"il-gui.detail-destination"}, request.destination)
+  add_detail_line(parent, {"il-gui.detail-status"}, request_status_caption(request), color)
+  add_detail_line(parent, {"il-gui.detail-source"}, Util.location_rich(request.source) or {"il-gui.routing"})
+  add_detail_line(parent, {"il-gui.detail-destination"}, Util.location_rich(request.destination))
   add_detail_line(parent, {"il-gui.observed-shortage"}, tostring(request.observed_shortage or request.amount or 0))
   add_detail_line(parent, {"il-gui.active-shipment-amount"}, tostring(request.active_shipment_amount or 0))
   add_detail_line(parent, {"il-gui.unplanned-amount"}, tostring(request.unplanned_amount or 0))
@@ -615,6 +673,9 @@ local function build_request_detail(parent, player)
         name_label.style.font_color = accent_colors.blue
         local spacer = entry.add({type = "empty-widget"})
         spacer.style.horizontally_stretchable = true
+        local amount_label = entry.add({type = "label", name = "il-demand-shipment-amount-" .. shipment_id,
+          caption = {"", tostring(shipment.allocated_amount or 0), " / ", tostring(shipment.amount or 0)}, style = "il_muted_label"})
+        amount_label.style.right_margin = 8
         local status_label = entry.add({type = "label", caption = {"il-gui.shipment-status-" .. shipment.status}, style = "il_muted_label"})
         status_label.style.font_color = status_colors[shipment.status] or status_colors.idle
       end
@@ -713,8 +774,23 @@ local function destination_pad_count(destinations)
   return total
 end
 
+local function top_metric_items(items, max_count)
+  local sorted = {}
+  for key, count in pairs(items or {}) do
+    sorted[#sorted + 1] = {key = key, count = count}
+  end
+  table.sort(sorted, function(a, b)
+    if a.count ~= b.count then return a.count > b.count end
+    return a.key < b.key
+  end)
+  local top = {}
+  for i = 1, math.min(max_count or 8, #sorted) do top[i] = sorted[i] end
+  return top
+end
+
 local function build_destination_rows(rows, player)
   local destinations = destination_list(player)
+  local state = State.ensure()
   local widths = layout(player).destinations
   for _, destination in ipairs(destinations) do
     local row = rows.add({type = "frame", direction = "horizontal", style = "il_list_row"})
@@ -722,8 +798,30 @@ local function build_destination_rows(rows, player)
     local planet = row.add({type = "label", caption = {"", "[space-location=", destination.planet, "] ", destination.planet}})
     set_width(planet, widths[1])
     planet.style.font_color = accent_colors.blue
+    local delivered_metrics = state.destination_metrics[destination.planet]
+    local provided_metrics = state.source_metrics[destination.planet]
+    local delivered = row.add({type = "label", name = "il-destination-delivered-" .. destination.planet,
+      caption = tostring(delivered_metrics and delivered_metrics.delivered or 0)})
+    set_width(delivered, widths[2])
+    delivered.style.font_color = accent_colors.green
+    local provided = row.add({type = "label", name = "il-destination-provided-" .. destination.planet,
+      caption = tostring(provided_metrics and provided_metrics.provided or 0)})
+    set_width(provided, widths[3])
+    provided.style.font_color = accent_colors.blue
+    local top = row.add({type = "flow", name = "il-destination-top-" .. destination.planet, direction = "horizontal"})
+    set_width(top, widths[4])
+    top.style.vertical_align = "center"
+    top.style.horizontal_spacing = 4
+    for _, entry in ipairs(top_metric_items(delivered_metrics and delivered_metrics.items, 8)) do
+      local item_name, quality = string.match(entry.key, "^(.-)|(.-)$")
+      local button = top.add({type = "sprite-button", sprite = "item/" .. item_name, quality = quality or "normal", style = "slot_button"})
+      button.style.size = 28
+      local count = top.add({type = "label", caption = tostring(entry.count)})
+      count.style.font_color = accent_colors.muted
+      count.style.right_margin = 6
+    end
     local endpoints = row.add({type = "flow", direction = "horizontal"})
-    set_width(endpoints, widths[2])
+    set_width(endpoints, widths[5])
     endpoints.style.vertical_align = "center"
     if #destination.pads < 5 then
       for _, pad in ipairs(destination.pads) do
@@ -743,8 +841,27 @@ local function build_destinations(parent, player)
   local widths = layout(player).destinations
   add_heading(parent, {"il-gui.destinations"}, {"il-gui.destinations-subtitle"})
   add_metrics(parent, {{destination_pad_count(destinations), {"il-gui.metric-delivery-endpoints"}, name = "il-metric-destinations", sprite = "utility/reference_point", color = accent_colors.orange}})
-  add_columns(parent, {{{"il-gui.planet"}, widths[1]}, {{"il-gui.landing-pads"}, widths[2]}})
+  add_columns(parent, {{{"il-gui.planet"}, widths[1]}, {{"il-gui.destination-delivered"}, widths[2]},
+    {{"il-gui.destination-provided"}, widths[3]}, {{"il-gui.destination-top-items"}, widths[4]}, {{"il-gui.landing-pads"}, widths[5]}})
   build_destination_rows(add_scroll(parent, "il-destination-list", player), player)
+end
+
+local function history_duration_caption(entry)
+  if not entry.created_tick or not entry.tick then return "—" end
+  return Util.format_ticks(math.max(0, entry.tick - entry.created_tick))
+end
+
+local function history_age_caption(entry)
+  if not entry.tick then return "—" end
+  return Util.format_ticks(math.max(0, game.tick - entry.tick))
+end
+
+local function find_history_entry(seq)
+  local state = State.ensure()
+  for _, entry in ipairs(state.history or {}) do
+    if entry.seq == seq then return entry end
+  end
+  return nil
 end
 
 local function build_history_rows(rows, player)
@@ -757,19 +874,30 @@ local function build_history_rows(rows, player)
     if request and request.force_index == player.force.index then
       local row = rows.add({type = "frame", direction = "horizontal", style = "il_list_row"})
       row.style.horizontally_stretchable = true
-      local item = row.add({type = "label", caption = {"", "[item=", entry.item, "] ", entry.amount, " × ", item_localised_name(entry.item)}})
-      set_width(item, widths[1])
+      local request_id = row.add({type = "label", name = "il-history-request-" .. tostring(entry.seq), caption = tostring(entry.id or "?")})
+      set_width(request_id, widths[1])
+      local item = row.add({type = "label", caption = {"", "[item=", entry.item, "] ", item_localised_name(entry.item)}})
+      set_width(item, widths[2])
       item.style.single_line = true
-      local route = row.add({type = "label", caption = {"", entry.source or "?", " → ", entry.destination or "?"}})
-      set_width(route, widths[2])
-      local status = row.add({type = "label", caption = {"il-gui.request-status-" .. entry.status}})
-      set_width(status, widths[3])
+      local amount = row.add({type = "label", name = "il-history-amount-" .. tostring(entry.seq), caption = tostring(entry.amount or 0)})
+      set_width(amount, widths[3])
+      local route = row.add({type = "label", caption = {"", Util.location_rich(entry.source) or "?", " → ", Util.location_rich(entry.destination) or "?"}})
+      set_width(route, widths[4])
+      local status = row.add({type = "label", caption = history_statuses[entry.status]
+        and {"il-gui.history-status-" .. entry.status} or tostring(entry.status or "-")})
+      set_width(status, widths[5])
       status.style.font_color = status_colors[entry.status] or status_colors.idle
+      local duration = row.add({type = "label", name = "il-history-duration-" .. tostring(entry.seq), caption = history_duration_caption(entry)})
+      set_width(duration, widths[6])
+      duration.style.font_color = accent_colors.muted
+      local age = row.add({type = "label", name = "il-history-age-" .. tostring(entry.seq), caption = history_age_caption(entry)})
+      set_width(age, widths[7])
+      age.style.font_color = accent_colors.muted
       local reason = row.add({type = "label", caption = entry.reason or "—"})
-      set_width(reason, widths[4])
+      set_width(reason, widths[8])
       reason.style.single_line = true
       local actions = row.add({type = "flow", direction = "horizontal"})
-      set_width(actions, widths[5])
+      set_width(actions, widths[9])
       actions.style.horizontal_spacing = 4
       add_icon_button(actions, {
         name = "il-history-clear-" .. tostring(entry.seq),
@@ -784,14 +912,71 @@ local function build_history_rows(rows, player)
   if not any then rows.add({type = "label", caption = {"il-gui.no-history"}, style = "il_empty_state"}) end
 end
 
-local function history_count(player)
+local function history_counts(player)
   local state = State.ensure()
-  local count = 0
+  local total, by_status = 0, {}
   for _, entry in ipairs(state.history) do
     local request = state.demands[entry.id]
-    if request and request.force_index == player.force.index then count = count + 1 end
+    if request and request.force_index == player.force.index then
+      total = total + 1
+      by_status[entry.status] = (by_status[entry.status] or 0) + 1
+    end
   end
-  return count
+  return total, by_status
+end
+
+local history_metric_statuses = {"completed", "failed", "cancelled", "approved", "denied"}
+local history_metric_sprites = {
+  completed = "utility/check_mark_green", failed = "utility/close_fat",
+  cancelled = "utility/close", approved = "utility/check_mark", denied = "utility/hand"
+}
+
+local function build_history_items(flow)
+  local state = State.ensure()
+  local item_totals = {}
+  for _, metrics in pairs(state.destination_metrics or {}) do
+    for key, count in pairs(metrics.items or {}) do
+      item_totals[key] = (item_totals[key] or 0) + count
+    end
+  end
+  for _, entry in ipairs(top_metric_items(item_totals, 12)) do
+    local item_name, quality = string.match(entry.key, "^(.-)|(.-)$")
+    local button = flow.add({type = "sprite-button", sprite = "item/" .. item_name, quality = quality or "normal", style = "slot_button"})
+    button.style.size = 24
+    local count = flow.add({type = "label", caption = tostring(entry.count), style = "il_muted_label"})
+    count.style.right_margin = 8
+  end
+end
+
+local function build_history_planets(flow)
+  local state = State.ensure()
+  local planets, seen = {}, {}
+  for planet in pairs(state.destination_metrics or {}) do seen[planet] = true end
+  for planet in pairs(state.source_metrics or {}) do seen[planet] = true end
+  for planet in pairs(seen) do planets[#planets + 1] = planet end
+  table.sort(planets)
+  for _, planet in ipairs(planets) do
+    local delivered = (state.destination_metrics[planet] or {}).delivered or 0
+    local provided = (state.source_metrics[planet] or {}).provided or 0
+    flow.add({type = "label", name = "il-history-planet-" .. planet,
+      caption = {"", "[space-location=", planet, "] ", tostring(delivered), "/", tostring(provided)},
+      tooltip = {"il-gui.history-planet-ratio"}, style = "il_muted_label",
+      tags = {il_d = delivered, il_p = provided}})
+  end
+end
+
+local function add_history_stats_strip(parent)
+  local items_flow = parent.add({type = "flow", name = "il-history-items-strip", direction = "horizontal"})
+  items_flow.style.vertical_align = "center"
+  items_flow.style.horizontal_spacing = 2
+  items_flow.style.bottom_margin = 2
+  build_history_items(items_flow)
+
+  local planets_flow = parent.add({type = "flow", name = "il-history-planets-strip", direction = "horizontal"})
+  planets_flow.style.vertical_align = "center"
+  planets_flow.style.horizontal_spacing = 10
+  planets_flow.style.bottom_margin = 4
+  build_history_planets(planets_flow)
 end
 
 local function build_history(parent, player)
@@ -800,8 +985,18 @@ local function build_history(parent, player)
     name = "il-history-clear-all", sprite = "utility/trash",
     tooltip = {"il-gui.clear-history-all"}, style = "il_square_tool_button_red"
   })
-  add_metrics(parent, {{history_count(player), {"il-gui.metric-recorded-events"}, name = "il-metric-history", sprite = "utility/clock", color = accent_colors.blue}})
-  add_columns(parent, {{{"il-gui.item"}, widths[1]}, {{"il-gui.route"}, widths[2]}, {{"il-gui.status"}, widths[3]}, {{"il-gui.result"}, widths[4]}, {{"il-gui.actions"}, widths[5]}})
+  local total, by_status = history_counts(player)
+  local metrics = {{total, {"il-gui.metric-recorded-events"}, name = "il-metric-history", sprite = "utility/clock", color = accent_colors.blue}}
+  for _, status in ipairs(history_metric_statuses) do
+    metrics[#metrics + 1] = {by_status[status] or 0, {"il-gui.history-status-" .. status},
+      name = "il-metric-history-" .. status, sprite = history_metric_sprites[status],
+      color = status_colors[status] or accent_colors.muted}
+  end
+  add_metrics(parent, metrics)
+  add_history_stats_strip(parent)
+  add_columns(parent, {{{"il-gui.demand-link"}, widths[1]}, {{"il-gui.item"}, widths[2]}, {{"il-gui.shipment-amount"}, widths[3]},
+    {{"il-gui.route"}, widths[4]}, {{"il-gui.status"}, widths[5]}, {{"il-gui.shipment-duration"}, widths[6]},
+    {{"il-gui.shipment-age"}, widths[7]}, {{"il-gui.result"}, widths[8]}, {{"il-gui.actions"}, widths[9]}})
   build_history_rows(add_scroll(parent, "il-history-list", player), player)
 end
 
@@ -927,12 +1122,16 @@ local function refresh_summaries(frame, player)
   set_metric(frame, "il-metric-request-active", #request_list(player, false))
   set_metric(frame, "il-metric-request-attention", #request_list(player, true))
   set_metric(frame, "il-metric-destinations", destination_pad_count(destination_list(player)))
-  set_metric(frame, "il-metric-history", history_count(player))
-  local s_total, s_loading, s_delivering, s_finished = shipment_counts(player)
+  local h_total, h_by_status = history_counts(player)
+  set_metric(frame, "il-metric-history", h_total)
+  for _, status in ipairs(history_metric_statuses) do
+    set_metric(frame, "il-metric-history-" .. status, h_by_status[status] or 0)
+  end
+  local s_total, s_loading, s_delivering, s_failed = shipment_counts(player)
   set_metric(frame, "il-metric-shipments-total", s_total)
   set_metric(frame, "il-metric-shipments-loading", s_loading)
   set_metric(frame, "il-metric-shipments-delivering", s_delivering)
-  set_metric(frame, "il-metric-shipments-finished", s_finished)
+  set_metric(frame, "il-metric-shipments-failed", s_failed)
 end
 
 local function refresh_request_detail(frame, player)
@@ -972,6 +1171,8 @@ end
 function Gui.refresh_history_structure(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
+  refill(frame, "il-history-items-strip", build_history_items, player)
+  refill(frame, "il-history-planets-strip", build_history_planets, player)
   refill(frame, "il-history-list-rows", build_history_rows, player)
   refresh_summaries(frame, player)
 end
@@ -1052,6 +1253,9 @@ function Gui.refresh_player(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
   local state = State.ensure()
+  local stale_shipment_row = false
+  local stale_destination_stats = false
+  local stale_history_stats = false
   visit_descendants(frame, function(element)
     local id = tonumber(string.match(element.name or "", "^il%-fleet%-state%-(%d+)$"))
     if id then
@@ -1061,9 +1265,9 @@ function Gui.refresh_player(player)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-fleet%-location%-(%d+)$"))
-    if id then element.caption = (state.platform_status[id] or {}).location or {"il-gui.in-transit"}; return end
+    if id then element.caption = Util.location_rich((state.platform_status[id] or {}).location) or {"il-gui.in-transit"}; return end
     id = tonumber(string.match(element.name or "", "^il%-fleet%-destination%-(%d+)$"))
-    if id then element.caption = (state.platform_status[id] or {}).destination or "—"; return end
+    if id then element.caption = Util.location_rich((state.platform_status[id] or {}).destination) or "—"; return end
     id = tonumber(string.match(element.name or "", "^il%-fleet%-eta%-(%d+)$"))
     if id then
       local eta = (state.platform_status[id] or {}).eta
@@ -1073,36 +1277,21 @@ function Gui.refresh_player(player)
     end
     id = tonumber(string.match(element.name or "", "^il%-fleet%-task%-(%d+)$"))
     if id then element.caption = platform_task(state.platform_status[id] or {}, state); return end
-    id = tonumber(string.match(element.name or "", "^il%-platform%-pin%-(%d+)$"))
-    if id then
-      local platform = Util.get_platform(player.force, id)
-      local pinned = platform and Platforms.is_pinned(player.force.index, platform) or false
-      element.toggled = pinned
-      element.tooltip = pinned and {"il-gui.unpin"} or {"il-gui.pin-tooltip"}
-      return
-    end
-    id = tonumber(string.match(element.name or "", "^il%-platform%-ready%-(%d+)$"))
-    if id then
-      local ready = State.get_platform_options(player.force.index, id).ready_signal
-      element.toggled = ready
-      element.sprite = ready and "utility/check_mark_green" or "utility/check_mark"
-      return
-    end
     id = tonumber(string.match(element.name or "", "^il%-request%-status%-(%d+)$"))
     if id and state.demands[id] then
-      element.caption = {"il-gui.request-status-" .. state.demands[id].status}
+      element.caption = request_status_caption(state.demands[id])
       element.style.font_color = status_colors[state.demands[id].status] or status_colors.idle
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-source%-(%d+)$"))
     if id and state.demands[id] then
-      element.caption = state.demands[id].source or {"il-gui.routing"}
+      element.caption = Util.location_rich(state.demands[id].source) or {"il-gui.routing"}
       element.style.font_color = state.demands[id].source and {r = 1, g = 1, b = 1} or accent_colors.muted
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-destination%-(%d+)$"))
     if id and state.demands[id] then
-      element.caption = state.demands[id].destination or "?"
+      element.caption = Util.location_rich(state.demands[id].destination) or "?"
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-shortage%-(%d+)$"))
@@ -1123,9 +1312,24 @@ function Gui.refresh_player(player)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-shipment%-status%-(%d+)$"))
+    if id then
+      local shipment = state.shipments[id]
+      if shipment and shipment.status ~= "completed" then
+        element.caption = {"il-gui.shipment-status-" .. shipment.status}
+        element.style.font_color = status_colors[shipment.status] or status_colors.idle
+      else
+        stale_shipment_row = true
+      end
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-shipment%-age%-(%d+)$"))
     if id and state.shipments[id] then
-      element.caption = {"il-gui.shipment-status-" .. state.shipments[id].status}
-      element.style.font_color = status_colors[state.shipments[id].status] or status_colors.idle
+      element.caption = shipment_age_caption(state.shipments[id])
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-shipment%-duration%-(%d+)$"))
+    if id and state.shipments[id] then
+      set_shipment_duration(element, state.shipments[id])
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-shipment%-amount%-(%d+)$"))
@@ -1140,7 +1344,7 @@ function Gui.refresh_player(player)
       return
     end
     id = tonumber(string.match(element.name or "", "^il%-request%-route%-(%d+)$"))
-    if id and state.demands[id] then local r = state.demands[id]; element.caption = {"", r.source or {"il-gui.routing"}, " → ", r.destination or "?"}; return end
+    if id and state.demands[id] then local r = state.demands[id]; element.caption = {"", Util.location_rich(r.source) or {"il-gui.routing"}, " → ", Util.location_rich(r.destination) or "?"}; return end
     id = tonumber(string.match(element.name or "", "^il%-request%-ship%-(%d+)$"))
     if id and state.demands[id] then
       element.caption = state.demands[id].platform_name or "—"
@@ -1152,8 +1356,63 @@ function Gui.refresh_player(player)
       local priority = state.demands[id].priority or 0
       element.caption = priority_names[priority]
       element.style.font_color = priority > 0 and accent_colors.orange or (priority < 0 and accent_colors.muted or {r = 1, g = 1, b = 1})
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-history%-age%-(%d+)$"))
+    if id then
+      local entry = find_history_entry(id)
+      element.caption = entry and history_age_caption(entry) or "—"
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-history%-duration%-(%d+)$"))
+    if id then
+      local entry = find_history_entry(id)
+      element.caption = entry and history_duration_caption(entry) or "—"
+      return
+    end
+    id = tonumber(string.match(element.name or "", "^il%-demand%-shipment%-amount%-(%d+)$"))
+    if id and state.shipments[id] then
+      local s = state.shipments[id]
+      element.caption = {"", tostring(s.allocated_amount or 0), " / ", tostring(s.amount or 0)}
+      return
+    end
+    local planet = string.match(element.name or "", "^il%-destination%-delivered%-(.*)$")
+    if planet then
+      local metrics = (state.destination_metrics or {})[planet]
+      if element.caption ~= tostring(metrics and metrics.delivered or 0) then stale_destination_stats = true end
+      return
+    end
+    planet = string.match(element.name or "", "^il%-destination%-provided%-(.*)$")
+    if planet then
+      local metrics = (state.source_metrics or {})[planet]
+      if element.caption ~= tostring(metrics and metrics.provided or 0) then stale_destination_stats = true end
+      return
+    end
+    planet = string.match(element.name or "", "^il%-history%-planet%-(.*)$")
+    if planet then
+      local dm = (state.destination_metrics or {})[planet]
+      local sm = (state.source_metrics or {})[planet]
+      local tags = element.tags or {}
+      if tags.il_d ~= (dm and dm.delivered or 0) or tags.il_p ~= (sm and sm.provided or 0) then
+        stale_history_stats = true
+      end
+      return
     end
   end)
+  -- Rows for completed or deleted shipments linger otherwise: rebuild the
+  -- list so the board stays limited to live and failed shipments.
+  if stale_shipment_row then
+    Gui.refresh_shipments_structure(player)
+  end
+  -- Destination stats change when shipments complete; rebuild so delivered/
+  -- provided counts and top items stay current.
+  if stale_destination_stats then
+    Gui.refresh_destinations_structure(player)
+  end
+  -- Completions also grow the history item/planet stats strip.
+  if stale_history_stats then
+    Gui.refresh_history_structure(player)
+  end
 end
 
 function Gui.refresh_open()

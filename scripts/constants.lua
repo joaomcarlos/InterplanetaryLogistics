@@ -2,7 +2,7 @@ return {
   chest_name = "interplanetary-requester-chest",
   dashboard_name = "il-dashboard",
   shortcut_name = "il-toggle-dashboard",
-  schema_version = 5,
+  schema_version = 7,
   -- Items that genuinely cannot or should not be transported via space platform.
   -- This is a blocklist: every item NOT in this set is considered shippable.
   -- send_to_orbit_mode controls the rocket silo's own launch button, not
@@ -14,10 +14,9 @@ return {
   },
   history_limit = 200,
   transfer_timeout = 60 * 60 * 30,
-  source_wait_timeout = 60 * 60 * 5,
+  source_wait_timeout = 60 * 30,
   delivery_confirmation_timeout = 60 * 60 * 5,
   monitor_interval = 60,
-  monitor_offset = 5,
   shipment_maintenance_offset = 10,
   fleet_refresh_offset = 30,
   gui_refresh_interval = 120,
@@ -30,10 +29,8 @@ return {
   shipment_maintenance_work_per_tick = 4,
   bootstrap_work_per_tick = 16,
   process_work_per_tick = 1,
-  monitor_work_per_tick = 1,
   fleet_work_per_tick = 1,
   gui_work_per_tick = 1,
-  planning_work_per_tick = 1,
   stuck_timeout = 60 * 60 * 3,
   default_leg_ticks = 60 * 60 * 5,
   active_statuses = {

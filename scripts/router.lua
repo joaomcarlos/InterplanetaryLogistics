@@ -61,13 +61,11 @@ end
 
 local function collect_eligible_platforms(state, force, demand, sources, destination)
   local enrolled = state.enrolled[force.index] or {}
-  local source_locations = {}
-  for _, source in ipairs(sources) do
-    source_locations[source.location] = true
-  end
   local platforms = {}
+  local idle, with_destination, with_source, with_both = 0, 0, 0, 0
   for _, platform in pairs(force.platforms or {}) do
     if platform.valid and enrolled[platform.index] and not state.platform_shipments[platform.index] then
+      idle = idle + 1
       local has_destination = schedule_has_location(platform, destination)
       local has_any_source = false
       for _, source in ipairs(sources) do
@@ -76,34 +74,28 @@ local function collect_eligible_platforms(state, force, demand, sources, destina
           break
         end
       end
+      if has_destination then with_destination = with_destination + 1 end
+      if has_any_source then with_source = with_source + 1 end
       if has_destination and has_any_source then
+        with_both = with_both + 1
         local capacity = Platforms.platform_capacity(platform, demand.item, demand.quality)
         if capacity >= 1 then
-          local pinned = false
-          for _, source in ipairs(sources) do
-            if State.get_route_preference(force.index, source.location, destination) == platform.index then
-              pinned = true
-              break
-            end
-          end
           local first_source = sources[1] and sources[1].location
           local eta = Platforms.estimate_ticks_to(platform, first_source) or math.huge
           platforms[#platforms + 1] = {
             platform = platform,
             capacity = capacity,
-            eta = eta,
-            pinned = pinned
+            eta = eta
           }
         end
       end
     end
   end
   table.sort(platforms, function(a, b)
-    if a.pinned ~= b.pinned then return a.pinned end
     if a.eta ~= b.eta then return a.eta < b.eta end
     return a.platform.index < b.platform.index
   end)
-  return platforms
+  return platforms, idle, with_destination, with_source, with_both
 end
 
 local function build_ephemeral_availability(sources)
@@ -128,14 +120,26 @@ function Router.plan(demand, force)
   end
   local sources = SourceStock.snapshot(demand, force)
   if #sources == 0 then
-    demand.last_reason = "No planet has enough provider stock"
+    demand.last_reason = "No other planet's logistic network has [item="
+      .. demand.item .. ",quality=" .. (demand.quality or "normal") .. "]"
     return false
   end
   local ephemeral = build_ephemeral_availability(sources)
   local destination = demand.destination
-  local eligible = collect_eligible_platforms(state, force, demand, sources, destination)
+  local eligible, idle, with_destination, with_source, with_both = collect_eligible_platforms(state, force, demand, sources, destination)
   if #eligible == 0 then
-    demand.last_reason = "No enrolled platform is currently eligible"
+    if idle == 0 then
+      local any_enrolled = next(state.enrolled[force.index] or {}) ~= nil
+      demand.last_reason = any_enrolled and "All enrolled platforms are busy" or "No platforms are enrolled"
+    elseif with_destination == 0 then
+      demand.last_reason = "No idle platform's schedule includes " .. (destination or "?")
+    elseif with_source == 0 then
+      demand.last_reason = "No idle platform's schedule includes a source planet"
+    elseif with_both == 0 then
+      demand.last_reason = "No idle platform's schedule covers both a source planet and " .. (destination or "?")
+    else
+      demand.last_reason = "No eligible platform has cargo space"
+    end
     return false
   end
   local any_shipment = false
@@ -186,7 +190,7 @@ function Router.plan(demand, force)
   if any_shipment then
     demand.active_shipment_amount = State.active_shipment_amount(demand.id)
     demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
-    demand.status = "dispatching"
+    State.set_status(demand, "dispatching")
     demand.last_reason = nil
     return true
   end

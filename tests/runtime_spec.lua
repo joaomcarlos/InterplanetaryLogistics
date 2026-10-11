@@ -775,207 +775,6 @@ local function make_sections()
   return sections
 end
 
-local function test_platform_commandeering()
-  reset_modules()
-  storage = {}
-  defines = {inventory = {hub_main = 1}}
-  settings = {global = {
-    ["il-enable-ready-signal"] = {value = false},
-    ["il-ready-signal"] = {value = "signal-green"},
-  }}
-
-  local cargo_count = 10
-  local inventory = {
-    get_item_count = function() return cargo_count end,
-    get_insertable_count = function() return 1000 end
-  }
-  local hub_sections = make_sections()
-  local pad_sections = make_sections()
-  local hub = {
-    valid = true,
-    get_inventory = function(inventory_index)
-      assert_equal(inventory_index, 1, "platform routing should read the hub_main inventory")
-      return inventory
-    end,
-    get_logistic_sections = function() return hub_sections end
-  }
-  local pad = {
-    valid = true,
-    unit_number = 50,
-    position = {x = 10, y = 20},
-    get_item_count = function() return 20 end,
-    get_logistic_sections = function() return pad_sections end
-  }
-  local destination_network = {valid = true, network_id = 7}
-  local source_network = {
-    valid = true,
-    network_id = 8,
-    get_item_count = function(_, provider_filter)
-      if provider_filter ~= nil then error("source inventory must not be filtered to providers") end
-      return 100
-    end
-  }
-  local source_surface = {
-    valid = true,
-    index = 2,
-    name = "fulgora",
-    planet = {name = "fulgora"},
-    find_entities_filtered = function() error("source inventory must not search entities") end
-  }
-  local destination_surface = {
-    valid = true,
-    index = 1,
-    find_entities_filtered = function() return {pad} end,
-    find_logistic_network_by_position = function() return destination_network end
-  }
-  local platform = {
-    valid = true,
-    index = 4,
-    name = "Courier",
-    hub = hub,
-    space_location = {name = "fulgora"},
-    schedule = {
-      current = 2,
-      records = {
-        {station = "nauvis", wait_conditions = {{type = "time", ticks = 60}}},
-        {station = "fulgora", wait_conditions = {{type = "time", ticks = 60}}}
-      }
-    }
-  }
-  local force = {
-    valid = true,
-    index = 1,
-    platforms = {platform},
-    logistic_networks = {fulgora = {source_network}},
-    find_logistic_network_by_position = function(_, surface)
-      return surface.index == 2 and source_network or destination_network
-    end
-  }
-  game = {
-    tick = 100,
-    forces = {[1] = force},
-    surfaces = {[1] = destination_surface, [2] = source_surface},
-    get_surface = function(index) return ({[1] = destination_surface, [2] = source_surface})[index] end,
-    get_entity_by_unit_number = function(unit_number) return unit_number == 50 and pad or nil end
-  }
-
-  local State = require("scripts.state")
-  local Platforms = require("scripts.platforms")
-  local request = {
-    id = 1,
-    key = "test",
-    status = "approved",
-    force_index = 1,
-    destination_surface_index = 1,
-    logistic_network_id = 7,
-    source = "fulgora",
-    destination = "nauvis",
-    item = "holmium-plate",
-    quality = "normal",
-    amount = 50,
-    origin = "chest"
-  }
-  local state = State.ensure()
-  state.demands[1] = request
-  state.demand_by_key.test = 1
-  local dispatched, reason = Platforms.dispatch(request, platform, force)
-  assert(dispatched, reason)
-  assert_equal(#platform.schedule.records, 4, "dispatch should append two temporary records")
-  assert_equal(platform.schedule.current, 3, "dispatch should activate source record")
-  assert_equal(#platform.schedule.records[3].wait_conditions, 2, "default pickup should use cargo and timeout conditions")
-  assert_equal(hub_sections.sections[1].filter.min, 60, "hub request should preserve baseline cargo")
-  assert_equal(pad_sections.sections[1].filter.min, 70, "pad request should preserve baseline cargo")
-
-  cargo_count = 60
-  Platforms.monitor()
-  assert_equal(request.status, "delivering", "full platform cargo should release source stop")
-
-  cargo_count = 10
-  platform.space_location = {name = "nauvis"}
-  game.tick = 200
-  Platforms.monitor()
-  assert_equal(request.status, "completed", "unloaded cargo should complete transfer")
-  assert_equal(#platform.schedule.records, 2, "completion should remove temporary records")
-  assert_equal(platform.schedule.current, 2, "completion should restore original schedule position")
-  assert_equal(#hub_sections.sections, 0, "completion should remove hub request section")
-  assert_equal(#pad_sections.sections, 0, "completion should remove landing-pad request section")
-
-  local second = {
-    id = 2,
-    key = "test-two",
-    status = "approved",
-    force_index = 1,
-    destination_surface_index = 1,
-    logistic_network_id = 999,
-    source = "fulgora",
-    destination = "nauvis",
-    item = "holmium-plate",
-    quality = "normal",
-    amount = 50,
-    origin = "chest"
-  }
-  state.demands[2] = second
-  state.demand_by_key[second.key] = 2
-  platform.space_location = {name = "fulgora"}
-  local mismatched, mismatch_reason = Platforms.dispatch(second, platform, force)
-  assert_equal(mismatched, false, "chest transfer should reject a pad on another logistics network")
-  assert_equal(mismatch_reason, "Destination has no cargo landing pad", "network mismatch should explain dispatch failure")
-
-  second.logistic_network_id = 7
-  State.get_platform_options(1, platform.index).ready_signal = true
-  assert(Platforms.dispatch(second, platform, force))
-  assert_equal(platform.schedule.records[3].wait_conditions[2].type, "circuit", "platform ready option should add a circuit condition")
-  assert_equal(platform.schedule.records[3].wait_conditions[2].condition.first_signal.name, "signal-green", "ready condition should use the configured signal")
-  platform.space_location = {name = "nauvis"}
-  game.tick = 300
-  Platforms.monitor()
-  assert_equal(second.status, "failed", "empty source timeout must not be reported as a delivery")
-  assert_equal(#platform.schedule.records, 2, "failed transfer should also restore the route")
-  assert_equal(#hub_sections.sections, 0, "failed transfer should remove hub request section")
-  assert_equal(#pad_sections.sections, 0, "failed transfer should remove landing-pad request section")
-end
-
-local function test_fleet_preferences_eta_and_reservations()
-  reset_modules()
-  storage = {}
-  settings = {global = {}}
-  game = {tick = 10}
-
-  local inventory = {get_insertable_count = function() return 1000 end}
-  local function platform(index, name, location)
-    return {
-      valid = true,
-      index = index,
-      name = name,
-      hub = {valid = true, get_main_inventory = function() return inventory end},
-      space_location = {name = location},
-      schedule = {current = 1, records = {
-        {station = "nauvis"},
-        {station = "fulgora"}
-      }}
-    }
-  end
-  local fast = platform(1, "Fast", "fulgora")
-  local pinned = platform(2, "Pinned", "nauvis")
-  local force = {valid = true, index = 1, platforms = {pinned, fast}}
-  local State = require("scripts.state")
-  local Platforms = require("scripts.platforms")
-  local state = State.ensure()
-  state.enrolled[1] = {[1] = true, [2] = true}
-  local request = {id = 1, item = "iron-plate", quality = "normal", amount = 50}
-
-  assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 1, "platform already at source should have the earliest ETA")
-  State.set_route_preference(1, "fulgora", "nauvis", 2)
-  assert_equal(Platforms.find_matching(request, force, "fulgora", "nauvis").index, 2, "pinned platform should override ETA ranking")
-
-  state.platform_transfers[1] = 10
-  state.platform_transfers[2] = 11
-  local unavailable, reason = Platforms.find_matching(request, force, "fulgora", "nauvis")
-  assert_equal(unavailable, nil, "busy platforms should not be selected")
-  assert_equal(reason, "All enrolled platforms are currently delivering other requests", "matcher should report the actual eligibility failure")
-  state.platform_transfers = {}
-end
-
 local function test_source_stock_exact_network_snapshots()
   reset_modules()
   storage = {}
@@ -1360,6 +1159,28 @@ local function test_plan_no_sources()
   assert(demand.last_reason, "failed planning should set a reason")
 end
 
+local function test_plan_blocker_reasons()
+  local env = make_planning_env()
+  local demand = env.make_demand(1, 50)
+  assert_equal(env.Router.try_dispatch(demand), false, "no stock should fail")
+  assert(string.find(demand.last_reason or "", "logistic network"), "stock blocker should name logistic networks")
+  env.network("fulgora", 2, 200)
+  env.platform(4, "Courier", "fulgora", {"nauvis", "fulgora"})
+  game.tick = 200
+  assert_equal(env.Router.try_dispatch(demand), false, "no enrollment should fail")
+  assert_equal(demand.last_reason, "No platforms are enrolled")
+  env.platform(5, "Partial", "nauvis", {"nauvis"})
+  env.state.enrolled[1] = {[5] = true}
+  game.tick = 300
+  assert_equal(env.Router.try_dispatch(demand), false, "schedule missing the source should fail")
+  assert_equal(demand.last_reason, "No idle platform's schedule includes a source planet")
+  env.platform(6, "Busy", "fulgora", {"nauvis", "fulgora"})
+  env.state.enrolled[1] = {[6] = true}
+  env.state.platform_shipments[6] = 999
+  assert_equal(env.Router.try_dispatch(demand), false, "busy-only fleet should fail")
+  assert_equal(demand.last_reason, "All enrolled platforms are busy")
+end
+
 local function test_plan_demand_amounts_updated()
   local env = make_planning_env()
   env.network("fulgora", 2, 200)
@@ -1383,20 +1204,6 @@ local function test_plan_platform_already_assigned_skipped()
   assert(ok, "planning should succeed with the idle platform")
   local shipment = env.state.shipments[1]
   assert_equal(shipment.platform_index, 5, "already-assigned platform should be skipped")
-end
-
-local function test_plan_pinned_route_priority()
-  local env = make_planning_env()
-  env.network("fulgora", 2, 200)
-  env.platform(4, "Alpha", "nauvis", {"nauvis", "fulgora"})
-  env.platform(5, "Beta", "fulgora", {"nauvis", "fulgora"})
-  env.state.enrolled[1] = {[4] = true, [5] = true}
-  env.State.set_route_preference(1, "fulgora", "nauvis", 4)
-  local demand = env.make_demand(1, 50)
-  local ok = env.Router.try_dispatch(demand)
-  assert(ok, "planning should succeed with pinned route priority")
-  local shipment = env.state.shipments[1]
-  assert_equal(shipment.platform_index, 4, "pinned platform should get priority despite higher ETA")
 end
 
 local function test_plan_deterministic_ordering()
@@ -1797,8 +1604,8 @@ local function test_state_schema_v3_initialization_and_indexes()
   local State = require("scripts.state")
   local state = State.ensure()
 
-  assert_equal(Constants.schema_version, 5, "Demand/Shipment persistence must use schema version 5")
-  assert_equal(state.schema_version, 5, "fresh state must use schema version 5")
+  assert_equal(Constants.schema_version, 7, "Demand/Shipment persistence must use schema version 7")
+  assert_equal(state.schema_version, 7, "fresh state must use schema version 7")
   assert(state.demands and state.demand_by_key and state.shipments and state.shipments_by_demand)
   assert(state.platform_shipments and state.tracked_construction)
   assert(state.chest_dirty and state.construction_dirty and state.shipment_dirty)
@@ -1898,7 +1705,7 @@ local function test_state_schema_v3_migrates_legacy_requests_and_transfers()
   local State = require("scripts.state")
   local state = State.ensure()
 
-  assert_equal(state.schema_version, 5, "legacy state must migrate to schema version 5")
+  assert_equal(state.schema_version, 7, "legacy state must migrate to schema version 7")
   assert_equal(state.requests, nil, "migrated state must drop legacy requests alias")
   assert_equal(state.request_by_key, nil, "migrated state must drop legacy request_by_key alias")
   assert_equal(state.demands[3], first, "migration must preserve Demand table identity and fields")
@@ -1943,8 +1750,8 @@ local function test_state_schema_v3_migrates_legacy_requests_and_transfers()
   assert_equal(state.shipments_by_demand[9][2], true, "every Shipment must be indexed by Demand")
   assert_equal(state.platform_shipments[30], 1, "Shipment must be indexed by platform")
   assert_equal(state.platform_shipments[90], 2, "each platform index must reference its Shipment")
-  assert_equal(next(state.active_transfers), nil, "legacy active transfers must be consumed after migration")
-  assert_equal(next(state.platform_transfers), nil, "legacy platform transfer indexes must be consumed after migration")
+  assert_equal(state.active_transfers, nil, "legacy active transfers must be dropped after migration")
+  assert_equal(state.platform_transfers, nil, "legacy platform transfer indexes must be dropped after migration")
 
   local shipments = state.shipments
   state = State.ensure()
@@ -2398,7 +2205,6 @@ test_destination_list_works_without_get_by_unit_number()
 test_chest_outstanding_demands()
 test_scan_scheduler_is_bounded()
 test_scheduler_prioritizes_routing_over_fleet_refresh()
-test_platform_commandeering()
 test_source_stock_exact_network_snapshots()
 test_source_stock_same_tick_cache_and_fresh_bypass()
 test_plan_single_source_single_ship()
@@ -2409,9 +2215,9 @@ test_plan_schedule_ordered_legs()
 test_plan_source_not_in_schedule_skipped()
 test_plan_no_eligible_ships()
 test_plan_no_sources()
+test_plan_blocker_reasons()
 test_plan_demand_amounts_updated()
 test_plan_platform_already_assigned_skipped()
-test_plan_pinned_route_priority()
 test_plan_deterministic_ordering()
 test_plan_partial_coverage()
 test_plan_non_approved_rejected()
@@ -2419,7 +2225,6 @@ test_plan_clears_legacy_source_fields()
 test_demand_source_tracking()
 test_demand_source_updates_when_first_shipment_cancels()
 test_router_rank_sources_still_works()
-test_fleet_preferences_eta_and_reservations()
 test_chest_filter_event_creates_demand_without_scan()
 test_chest_dirty_independent_of_scan_job()
 test_retire_chest_removes_all_demands()
@@ -2649,6 +2454,40 @@ local function test_ghost_revive_untracks_demand()
   assert_equal(state.demand_by_key[key], nil, "revive should retire the construction demand")
 end
 
+local function test_untrack_updates_surviving_demand_quantities()
+  local State, Demands, state, ghost = make_construction_env()
+  local g1 = ghost("spidertron", "spidertron", "normal")
+  local g2 = ghost("spidertron", "spidertron", "normal")
+  local g3 = ghost("biochamber", "biochamber", "normal")
+  Demands.track_construction(g1)
+  Demands.track_construction(g2)
+  Demands.track_construction(g3)
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+  local spider_key = table.concat({"alert", 1, 1, 101, "spidertron", "normal"}, "|")
+  local bio_key = table.concat({"alert", 1, 1, 101, "biochamber", "normal"}, "|")
+  local spider_demand = state.demands[state.demand_by_key[spider_key]]
+  local bio_demand = state.demands[state.demand_by_key[bio_key]]
+  assert_equal(spider_demand.amount, 2, "two spidertron ghosts should aggregate to amount 2")
+  bio_demand.status = "approved"
+  -- Untracking one spidertron ghost must update quantities in place; the
+  -- unrelated approved biochamber demand must not be cancelled or re-queued.
+  Demands.untrack_construction(g1)
+  assert_equal(state.demands[bio_demand.id], bio_demand, "surviving demand must not be cancelled by another ghost's removal")
+  assert_equal(bio_demand.status, "approved", "surviving demand keeps its approval")
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+  assert_equal(state.demands[spider_demand.id], spider_demand, "spidertron demand must be updated in place, not recreated")
+  assert_equal(spider_demand.amount, 1, "remaining ghost should shrink the observed shortage to 1")
+  assert_equal(state.demands[bio_demand.id], bio_demand, "unrelated demand keeps its identity")
+  assert_equal(bio_demand.status, "approved", "unrelated demand must not return to the approval queue")
+  -- Once no spidertron ghost remains, its demand retires while the other survives.
+  Demands.untrack_construction(g2)
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+  assert_equal(state.demand_by_key[spider_key], nil, "spidertron demand retires when its last ghost is gone")
+  assert_equal(state.demands[bio_demand.id], bio_demand, "remaining demand still lives")
+  Demands.untrack_construction(g3)
+  assert_equal(state.demand_by_key[bio_key], nil, "demand retires when no tracked entities remain on the surface")
+end
+
 local function test_bootstrap_populates_tracked_construction()
   local State, Demands, state, ghost, proxy, tile_ghost = make_construction_env()
   -- Create entities that bootstrap should discover via find_entities_filtered
@@ -2748,21 +2587,39 @@ end
 
 local function test_bounded_construction_dirty_processing()
   local State, Demands, state, ghost = make_construction_env()
-  -- Track many entities
+  -- The dirty queue is bounded per (force, surface) pair, so spread 20
+  -- entities across 5 surfaces to exercise partial draining.
+  local network = game.surfaces[1].find_logistic_network_by_position()
+  local extra_surfaces = {}
+  for index = 2, 5 do
+    extra_surfaces[index] = {
+      valid = true,
+      index = index,
+      name = "surface" .. index,
+      planet = {name = "surface" .. index},
+      find_logistic_network_by_position = function() return network end
+    }
+    game.surfaces[index] = extra_surfaces[index]
+  end
+  local surfaces_by_index = game.surfaces
+  game.get_surface = function(index) return surfaces_by_index[index] or surfaces_by_index[1] end
   for i = 1, 20 do
     local entity = ghost("iron-plate", "iron-plate", "normal")
+    entity.surface = surfaces_by_index[(i - 1) % 5 + 1]
     Demands.track_construction(entity)
   end
   assert(Demands.construction_dirty_active(), "construction dirty should be active with 20 entities")
-  -- Step with small budget - should not complete
+  -- Step with a budget smaller than the 5 dirty surfaces - should not complete
   local finished = Demands.step_construction_dirty(3)
-  assert_equal(finished, false, "construction dirty with budget 3 should not clear 20 entries")
+  assert_equal(finished, false, "construction dirty with budget 3 should not clear 5 surfaces")
   -- Drain the rest
   while Demands.construction_dirty_active() do Demands.step_construction_dirty(16) end
-  local key = table.concat({"alert", 1, 1, 101, "iron-plate", "normal"}, "|")
-  assert(state.demand_by_key[key], "construction dirty should create demand after draining")
-  local demand = state.demands[state.demand_by_key[key]]
-  assert_equal(demand.amount, 20, "all 20 ghosts should aggregate into one demand")
+  for index = 1, 5 do
+    local key = table.concat({"alert", 1, index, 101, "iron-plate", "normal"}, "|")
+    assert(state.demand_by_key[key], "construction dirty should create demand on surface " .. index)
+    local demand = state.demands[state.demand_by_key[key]]
+    assert_equal(demand.amount, 4, "each surface should aggregate its 4 ghosts into one demand")
+  end
 end
 
 local function test_roboport_topology_reassociation()
@@ -2974,6 +2831,7 @@ end
 test_event_driven_tracking_creates_demand()
 test_untrack_on_ghost_removal_retires_demand()
 test_ghost_revive_untracks_demand()
+test_untrack_updates_surviving_demand_quantities()
 test_bootstrap_populates_tracked_construction()
 test_bootstrap_is_one_time()
 test_construction_dirty_independent_of_scan_job()
@@ -2997,8 +2855,6 @@ local function make_shipment_env()
   defines = {inventory = {hub_main = 1}}
   settings = {global = {
     ["il-auto-approve-seconds"] = {value = 30},
-    ["il-enable-ready-signal"] = {value = false},
-    ["il-ready-signal"] = {value = "signal-green"}
   }}
 
   local cargo_count = 10
@@ -3152,6 +3008,19 @@ local function test_execute_shipment_writes_one_pad_section_per_demand()
   assert_equal(pad_record.pad_section_index, 1, "pad record should store the section index")
 end
 
+local function test_unscoped_network_id_matches_any_destination_pad()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 10)
+  demand.logistic_network_id = 0
+  local record, pad = env.Platforms.ensure_pad_section(demand, env.force)
+  assert(record, "logistic_network_id 0 must behave as unscoped and match any pad")
+  assert_equal(pad.unit_number, 50, "unscoped demand should use the only destination pad")
+  env.Platforms.remove_pad_section(demand.id)
+  demand.logistic_network_id = nil
+  local record2 = env.Platforms.ensure_pad_section(demand, env.force)
+  assert(record2, "nil logistic_network_id must also match any pad")
+end
+
 local function test_execute_shipment_appends_temporary_schedule_records()
   local env = make_shipment_env()
   local demand = env.make_demand(1, 80)
@@ -3276,6 +3145,38 @@ local function test_cancel_cleans_factorio_normalized_temporary_schedule_records
   assert_equal(env.platform.schedule.records[1].station, "nauvis", "cleanup must preserve permanent records")
   assert_equal(env.platform.schedule.records[2].station, "fulgora", "cleanup must preserve permanent records")
   assert_equal(env.platform.schedule.records[3].station, "vulcanus", "cleanup must preserve permanent records")
+end
+
+local function normalize_shipment_schedule(platform)
+  for _, record in ipairs(platform.schedule.records) do
+    for _, wait in ipairs(record.wait_conditions or {}) do
+      local condition = wait.condition
+      if condition then
+        if condition.comparator == ">=" then condition.comparator = "≥" end
+        if condition.comparator == "<=" then condition.comparator = "≤" end
+        if condition.first_signal and condition.first_signal.type == "item" then
+          condition.first_signal.type = nil
+          condition.first_signal.quality = nil
+        end
+      end
+    end
+  end
+end
+
+local function test_maintenance_accepts_factorio_normalized_schedule()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+  normalize_shipment_schedule(env.platform)
+  env.platform.space_location = nil
+  local schedule = env.platform.schedule
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "loading", "normalized destination record must not fail an in-flight Shipment")
+  assert_equal(env.platform.schedule, schedule, "maintenance must not reset the ship's schedule")
+  env.Platforms.cancel_shipment(shipment.id, "test cancel")
+  assert_equal(#env.platform.schedule.records, 3, "cleanup must recognize normalized pickup and destination records")
 end
 
 local function test_missing_destination_schedule_record_fails_for_replanning()
@@ -3421,7 +3322,31 @@ end
 
 test_execute_shipment_writes_hub_sections_for_each_leg()
 test_execute_shipment_writes_one_pad_section_per_demand()
+test_unscoped_network_id_matches_any_destination_pad()
+local function test_execute_shipment_respects_schedule_override()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  env.Platforms.execute_shipment(shipment, env.force)
+  -- Default on: divert to the first temporary source record (index 4).
+  assert_equal(env.platform.schedule.current, 4, "override on should divert to the first temporary record")
+  assert_equal(env.Platforms.schedule_override(1, env.platform.index), true, "schedule override should default to enabled")
+  -- Re-dispatch the same shipment with override disabled.
+  env.platform.schedule = {current = 2, records = {
+    {station = "nauvis", wait_conditions = {{type = "time", ticks = 60}}},
+    {station = "fulgora", wait_conditions = {{type = "time", ticks = 60}}},
+    {station = "vulcanus", wait_conditions = {{type = "time", ticks = 60}}}
+  }}
+  shipment.status = "planned"
+  env.Platforms.set_schedule_override(1, env.platform.index, false)
+  env.Platforms.execute_shipment(shipment, env.force)
+  assert_equal(env.platform.schedule.current, 2, "override off must keep the ship's current schedule position")
+  assert_equal(#env.platform.schedule.records, 6, "override off must still append the temporary records")
+end
+
 test_execute_shipment_appends_temporary_schedule_records()
+test_execute_shipment_respects_schedule_override()
 test_execute_shipment_never_mutates_permanent_records()
 test_execute_shipment_sets_status_to_loading()
 test_execute_shipment_stores_baseline_and_indices()
@@ -4241,8 +4166,6 @@ local function make_gui_env()
   defines = {inventory = {hub_main = 1}, alert_type = {no_material_for_construction = 1}}
   settings = {global = {
     ["il-auto-approve-seconds"] = {value = 30},
-    ["il-enable-ready-signal"] = {value = false},
-    ["il-ready-signal"] = {value = "signal-green"}
   }}
   prototypes = nil
 
@@ -4307,6 +4230,26 @@ local function make_gui_env()
   }
 end
 
+local function test_approval_alert_cleared_on_decision()
+  local env = make_gui_env()
+  local Demands = require("scripts.demands")
+  local calls = {}
+  local alert_player = {valid = true, index = 1,
+    add_custom_alert = function() calls[#calls + 1] = "add" end,
+    remove_alert = function() calls[#calls + 1] = "remove" end}
+  env.force.players = {alert_player}
+  game.get_entity_by_unit_number = function() return {valid = true} end
+
+  local request = env.make_demand(1)
+  request.chest_unit_number = 42
+  env.state.demands[1] = request
+
+  Demands.approve(1, 1, true)
+  local removed = 0
+  for _, kind in ipairs(calls) do if kind == "remove" then removed = removed + 1 end end
+  assert_equal(1, removed, "approval should clear the pending-approval tray alert")
+end
+
 local function test_shipments_view_in_navigation()
   local env = make_gui_env()
   env.Gui.build(env.player)
@@ -4351,11 +4294,12 @@ local function test_shipments_view_sorted_by_status_then_id()
     local sid = tonumber(string.match(child.name or "", "^il%-shipment%-row%-(%d+)$"))
     if sid then table.insert(shipment_rows, sid) end
   end
-  assert_equal(#shipment_rows, 4, "should show 4 shipment rows")
+  assert_equal(#shipment_rows, 3, "completed shipments should be hidden from the live board")
   assert_equal(shipment_rows[1], 1, "loading should come first")
   assert_equal(shipment_rows[2], 2, "delivering should come second")
-  assert_equal(shipment_rows[3], 3, "completed should come third")
-  assert_equal(shipment_rows[4], 4, "failed should come fourth")
+  assert_equal(shipment_rows[3], 4, "failed should stay visible for triage")
+  local completed_row = env.find_element(frame, "il-shipment-row-3")
+  assert_equal(completed_row, nil, "completed shipment row must not render")
 end
 
 local function test_shipments_view_shows_fields()
@@ -4469,16 +4413,16 @@ local function test_shipment_metrics()
   local frame = env.player.gui.screen["il-dashboard"]
   local total_metric = env.find_element(frame, "il-metric-shipments-total")
   assert(total_metric, "total shipments metric should exist")
-  assert_equal(total_metric.caption, "4", "total metric should show 4")
+  assert_equal(total_metric.caption, "3", "total metric should exclude completed shipments")
   local loading_metric = env.find_element(frame, "il-metric-shipments-loading")
   assert(loading_metric, "loading shipments metric should exist")
   assert_equal(loading_metric.caption, "1", "loading metric should show 1")
   local delivering_metric = env.find_element(frame, "il-metric-shipments-delivering")
   assert(delivering_metric, "delivering shipments metric should exist")
   assert_equal(delivering_metric.caption, "1", "delivering metric should show 1")
-  local finished_metric = env.find_element(frame, "il-metric-shipments-finished")
-  assert(finished_metric, "finished shipments metric should exist")
-  assert_equal(finished_metric.caption, "2", "finished metric should show 2")
+  local failed_metric = env.find_element(frame, "il-metric-shipments-failed")
+  assert(failed_metric, "failed shipments metric should exist")
+  assert_equal(failed_metric.caption, "1", "failed metric should show 1")
 end
 
 local function test_layout_includes_shipment_widths()
@@ -4529,6 +4473,7 @@ local function test_refresh_summaries_includes_shipment_metrics()
   assert_equal(total_metric.caption, "2", "refresh_structure should update shipment total metric")
 end
 
+test_approval_alert_cleared_on_decision()
 test_shipments_view_in_navigation()
 test_shipments_view_sorted_by_status_then_id()
 test_shipments_view_shows_fields()
@@ -4594,7 +4539,7 @@ end
 local function test_shipment_clear_button_removes_terminal_shipment()
   local env = make_gui_env()
   env.make_demand(1)
-  env.make_shipment(1, 1, "Courier", "completed", 50)
+  env.make_shipment(1, 1, "Courier", "failed", 50)
   env.state.gui_tabs[1] = {view = "shipments"}
   env.Gui.build(env.player)
   local frame = env.player.gui.screen["il-dashboard"]
@@ -4626,8 +4571,82 @@ local function test_requests_clear_all_button_present()
   assert(btn, "trade requests view should have a clear-all button")
 end
 
+local function test_history_view_shows_request_details()
+  local env = make_gui_env()
+  local demand = env.make_demand(1)
+  env.State.add_history(demand, "completed", "done")
+  env.state.gui_tabs[1] = {view = "history"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local seq = env.state.history[1].seq
+  assert_equal(env.state.history[1].created_tick, demand.created_tick, "history entry should snapshot the request creation tick")
+  local request_label = env.find_element(frame, "il-history-request-" .. seq)
+  assert(request_label, "history row should show the request id")
+  assert_equal(request_label.caption, "1", "request id should match the demand id")
+  local amount_label = env.find_element(frame, "il-history-amount-" .. seq)
+  assert(amount_label, "history row should show the amount")
+  assert_equal(amount_label.caption, "100", "amount should match the demand amount")
+  local duration_label = env.find_element(frame, "il-history-duration-" .. seq)
+  assert(duration_label, "history row should show the request duration")
+  local Util = require("scripts.util")
+  assert_equal(duration_label.caption, Util.format_ticks(game.tick - demand.created_tick), "duration should be event tick minus request created_tick")
+  local age_label = env.find_element(frame, "il-history-age-" .. seq)
+  assert(age_label, "history row should show the event age")
+end
+
+local function test_destinations_view_shows_stats_and_top_items()
+  local env = make_gui_env()
+  env.State.ensure_destinations()
+  env.State.register_landing_pad(1, {valid = true, unit_number = 1,
+    surface = {valid = true, planet = {name = "nauvis"}}, position = {x = 0, y = 0}, force = {index = 1}})
+  env.state.destination_metrics["nauvis"] = {delivered = 500, items = {["iron-plate|normal"] = 300, ["copper-plate|normal"] = 200}}
+  env.state.source_metrics["nauvis"] = {provided = 150, items = {["iron-plate|normal"] = 150}}
+  env.state.gui_tabs[1] = {view = "destinations"}
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local delivered = env.find_element(frame, "il-destination-delivered-nauvis")
+  assert(delivered, "destinations row should show delivered count")
+  assert_equal(delivered.caption, "500", "delivered count should match destination metrics")
+  local provided = env.find_element(frame, "il-destination-provided-nauvis")
+  assert(provided, "destinations row should show provided count")
+  assert_equal(provided.caption, "150", "provided count should match source metrics")
+  local top = env.find_element(frame, "il-destination-top-nauvis")
+  assert(top, "destinations row should have a top-items flow")
+  local buttons, counts = 0, 0
+  for _, child in ipairs(top.children) do
+    if child.type == "sprite-button" then buttons = buttons + 1
+    elseif child.type == "label" then counts = counts + 1 end
+  end
+  assert_equal(buttons, 2, "top items should render one icon per item")
+  assert_equal(counts, 2, "top items should render one count label per item")
+end
+
 test_history_clear_all_button_present()
 test_history_per_row_clear_button_removes_entry()
+test_history_view_shows_request_details()
+test_destinations_view_shows_stats_and_top_items()
+
+local function test_request_status_shows_time_in_status()
+  local env = make_gui_env()
+  local demand = env.make_demand(1)
+  demand.status = "loading"
+  demand.status_tick = 40
+  env.Gui.build(env.player)
+  local frame = env.player.gui.screen["il-dashboard"]
+  local status_label = env.find_element(frame, "il-request-status-1")
+  assert(status_label, "trade request row should show status")
+  local Util = require("scripts.util")
+  assert_equal(type(status_label.caption), "table", "status caption should compose localised status and elapsed time")
+  assert_equal(status_label.caption[4], Util.format_ticks(game.tick - 40), "status should show time in current status")
+  env.State.set_status(demand, "delivering")
+  assert_equal(demand.status_tick, game.tick, "set_status must stamp the transition tick")
+  game.tick = 200
+  env.State.set_status(demand, "delivering")
+  assert_equal(demand.status_tick, 100, "re-assigning the same status must not reset the timer")
+  env.State.set_status(demand, "queued")
+  assert_equal(demand.status_tick, 200, "status change must update the tick")
+end
+test_request_status_shows_time_in_status()
 test_request_clear_button_removes_demand()
 test_shipment_clear_button_removes_terminal_shipment()
 test_shipments_clear_all_button_present()
@@ -4704,7 +4723,7 @@ local function load_control_event_handlers(live_test_mode)
   local event_names = {
     "on_built_entity", "on_robot_built_entity", "script_raised_built", "script_raised_revive",
     "on_entity_cloned", "on_entity_upgraded", "on_player_mined_entity", "on_robot_mined_entity",
-    "on_entity_died", "script_raised_destroy", "on_entity_logistic_slot_changed",
+    "on_entity_died", "on_post_entity_died", "script_raised_destroy", "on_entity_logistic_slot_changed",
     "on_space_platform_changed_state", "on_cargo_pod_delivered_cargo", "on_lua_shortcut",
     "on_gui_click", "on_player_display_resolution_changed", "on_player_display_scale_changed",
     "on_gui_closed", "on_tick"
@@ -4749,6 +4768,27 @@ local function test_control_registers_factorio_2_1_shipment_progress_events()
     "control must register Factorio 2.1 platform-state progress events")
   assert(handlers[defines.events.on_cargo_pod_delivered_cargo],
     "control must register Factorio 2.1 delivered-cargo events")
+end
+
+local function test_control_tracks_death_created_ghost()
+  local handlers, State = load_control_event_handlers()
+  local state = State.ensure()
+  assert(handlers[defines.events.on_post_entity_died],
+    "control must register on_post_entity_died to track death-created ghosts")
+  handlers[defines.events.on_post_entity_died]({
+    ghost = {
+      valid = true,
+      name = "entity-ghost",
+      unit_number = 123,
+      surface = {index = 1},
+      position = {x = 5, y = 6},
+      force = {index = 1}
+    }
+  })
+  local tracked = state.tracked_construction["1|entity-ghost|123"]
+  assert(tracked, "death-created construction ghost must be tracked")
+  assert_equal(state.construction_dirty["1|1"], true,
+    "death-created ghost must dirty-mark its (force, surface) for re-aggregation")
 end
 
 local function test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
@@ -4838,6 +4878,7 @@ test_control_prepare_live_smoke_clears_only_active_baselines()
 test_control_live_smoke_mode_is_explicitly_enabled()
 
 test_control_registers_factorio_2_1_shipment_progress_events()
+test_control_tracks_death_created_ghost()
 test_control_marks_pad_shipment_dirty_from_delivered_cargo_payload()
 
 local function test_control_accepts_direct_entity_cargo_pod_destination()
@@ -4861,5 +4902,176 @@ local function test_control_accepts_direct_entity_cargo_pod_destination()
 end
 
 test_control_accepts_direct_entity_cargo_pod_destination()
+
+
+test_maintenance_accepts_factorio_normalized_schedule()
+
+local function test_shipment_uses_registered_pad_without_global_unit_lookup()
+  local env = make_shipment_env()
+  env.State.register_landing_pad(env.pad.unit_number, env.pad)
+  game.get_entity_by_unit_number = function() return nil end
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  assert(env.Platforms.execute_shipment(shipment, env.force))
+  local pad_record = env.state.pad_sections[demand.id]
+  local reused = env.Platforms.ensure_pad_section(demand, env.force)
+  assert_equal(reused, pad_record, "existing registered pad section must be reused")
+  assert_equal(#env.pad_sections.sections, 1, "pad lookup must not duplicate request sections")
+  env.Platforms.maintain_shipment(shipment.id)
+  assert_equal(shipment.status, "loading", "a registered pad missing the get-by-unit-number flag must remain valid")
+  env.Platforms.cancel_shipment(shipment.id, "test cancel")
+  assert_equal(#env.pad_sections.sections, 0, "cleanup must remove the registered pad's request section")
+end
+
+test_shipment_uses_registered_pad_without_global_unit_lookup()
+
+local function test_failed_dispatch_preserves_in_flight_schedule()
+  local env = make_shipment_env()
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  demand.logistic_network_id = 99 -- No landing pad in this destination network.
+  env.platform.space_location = nil
+  env.platform.schedule.current = 3 -- Ship is already travelling to Vulcanus.
+  local schedule = env.platform.schedule
+  env.Platforms.execute_pending_shipments(env.force)
+  assert_equal(shipment.status, "failed", "failed dispatch must release the Shipment")
+  assert_equal(env.platform.schedule, schedule, "failed dispatch must not rewrite an untouched schedule")
+  assert_equal(env.platform.schedule.current, 3, "failed dispatch must not redirect an in-flight ship to its first stop")
+  assert_equal(#env.hub_sections.sections, 0, "failed dispatch must roll back its hub requests")
+end
+
+test_failed_dispatch_preserves_in_flight_schedule()
+
+local function test_construction_tracking_without_global_unit_lookup()
+  local State, Demands, state, ghost, proxy, tile_ghost = make_construction_env()
+  local entities = {
+    ghost("spidertron", "spidertron", "legendary"),
+    proxy("iron-plate", 7, "normal"),
+    tile_ghost("concrete", "normal")
+  }
+  game.get_entity_by_unit_number = function() return nil end
+  game.surfaces[1].find_entities_filtered = function() error("tracked reconciliation must not scan the world") end
+  for _, entity in ipairs(entities) do Demands.track_construction(entity) end
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+  local keys = {
+    "alert|1|1|101|spidertron|legendary",
+    "alert|1|1|101|iron-plate|normal",
+    "alert|1|1|101|concrete|normal"
+  }
+  for i, key in ipairs(keys) do
+    local id = state.demand_by_key[key]
+    assert(id, "registered construction entity must remain discoverable without global unit lookup: " .. key)
+    assert_equal(state.demands[id].amount, i == 2 and 7 or 1, "tracked demand must preserve exact outstanding count")
+  end
+  Demands.reassociate_construction(1, 1)
+  while Demands.construction_dirty_active() do Demands.step_construction_dirty(8) end
+  Demands.scan()
+  assert(Demands.start_scan())
+  while Demands.scan_active() do Demands.step_scan(1) end
+  for _, key in ipairs(keys) do assert(state.demand_by_key[key], "all reconciliation paths must retain tracked demand") end
+  state.bootstrap_completed = true
+  reset_modules()
+  State = require("scripts.state")
+  Demands = require("scripts.demands")
+  state = State.ensure()
+  assert_equal(state.bootstrap_completed, true, "normal reload must preserve completed construction bootstrap")
+  Demands.scan()
+  for _, key in ipairs(keys) do assert(state.demand_by_key[key], "normal reload must retain construction entity references") end
+  entities[1].valid = false
+  Demands.scan()
+  assert_equal(state.demand_by_key[keys[1]], nil, "invalid tracked entity must retire its demand")
+end
+
+local function test_schema_5_restarts_construction_bootstrap_once()
+  reset_modules()
+  storage = {interplanetary_logistics = {schema_version = 5, bootstrap_completed = true}}
+  local State = require("scripts.state")
+  local state = State.ensure()
+  assert_equal(state.bootstrap_completed, false, "schema migration must rediscover construction entries lost by unit lookup")
+  state.bootstrap_completed = true
+  State.ensure()
+  assert_equal(state.bootstrap_completed, true, "construction recovery must not repeat after migration")
+end
+
+test_construction_tracking_without_global_unit_lookup()
+test_schema_5_restarts_construction_bootstrap_once()
+
+local function test_dispatch_tries_another_pad_when_first_is_full()
+  local env = make_shipment_env()
+  local full = {valid = true, unit_number = 1, position = {x = 0, y = 0},
+    get_item_count = function() return 0 end,
+    get_logistic_sections = function() return {add_section = function() return nil end} end}
+  local foreign = {valid = true, unit_number = 2, position = {x = 99, y = 0},
+    get_logistic_sections = function() error("a full pad must not allow delivery outside the destination network") end}
+  local find_network = game.surfaces[1].find_logistic_network_by_position
+  game.surfaces[1].find_logistic_network_by_position = function(position, force)
+    if position.x == 99 then return {valid = true, network_id = 99} end
+    return find_network(position, force)
+  end
+  game.surfaces[1].find_entities_filtered = function() return {full, foreign, env.pad} end
+  local demand = env.make_demand(1, 80)
+  env.Router.try_dispatch(demand)
+  local shipment = env.state.shipments[1]
+  local ok, reason = env.Platforms.execute_shipment(shipment, env.force)
+  assert(ok, reason)
+  assert_equal(shipment.pad_unit_number, 50, "dispatch must use a pad with room in the same destination network")
+  assert_equal(#env.pad_sections.sections, 1, "fallback pad must receive exactly one demand section")
+end
+
+local function test_failed_dispatch_remains_visible_with_reason()
+  for _, mode in ipairs({"immediate", "bounded"}) do
+    local env = make_shipment_env()
+    local demand = env.make_demand(1, 80)
+    env.Router.try_dispatch(demand)
+    local shipment = env.state.shipments[1]
+    demand.logistic_network_id = 99
+    if mode == "immediate" then
+      env.Platforms.execute_pending_shipments(env.force)
+    else
+      assert(env.Platforms.start_shipment_execution())
+      env.Platforms.step_shipment_execution(1)
+    end
+    assert_equal(shipment.status, "failed", "execution failure must remain a failed Shipment rather than disappear")
+    assert_equal(env.state.shipments[shipment.id], shipment, "failure must remain reviewable in the Shipments view")
+    assert_equal(demand.last_reason, "could not create a destination landing-pad request section", "parent demand must expose the dispatch blocker")
+    assert_equal(demand.status, "approved", "failed demand must remain eligible for retry")
+  end
+end
+
+test_dispatch_tries_another_pad_when_first_is_full()
+test_failed_dispatch_remains_visible_with_reason()
+
+local function test_state_ensure_recovers_from_cleared_storage()
+  reset_modules()
+  storage = {}
+  settings = {global = {}}
+  defines = {}
+  game = {tick = 0, forces = {}, surfaces = {}}
+
+  local State = require("scripts.state")
+  local first = State.ensure()
+  assert_equal(first.schema_version, 7, "initial ensure must stamp the schema version")
+
+  -- Simulates storage being reset mid-session: the once-per-session fast
+  -- path must not return nil or skip re-initialization.
+  storage.interplanetary_logistics = nil
+  local rebuilt = State.ensure()
+  assert_equal(type(rebuilt), "table", "cleared storage must rebuild a fresh state table")
+  assert(rebuilt ~= first, "rebuilt state must not reuse the discarded table")
+  assert_equal(type(rebuilt.demands), "table", "rebuilt state must initialize Demand storage")
+  assert_equal(type(rebuilt.shipments), "table", "rebuilt state must initialize Shipment storage")
+  assert_equal(rebuilt.schema_version, 7, "rebuilt state must restamp the schema version")
+
+  -- Same-schema in-session calls hit the fast path and must not clobber
+  -- live data written between calls.
+  rebuilt.demands[7] = {id = 7}
+  local again = State.ensure()
+  assert_equal(again, rebuilt, "same-session ensure must return the live state table")
+  assert_equal(again.demands[7].id, 7, "fast-path ensure must preserve in-session state")
+end
+
+test_state_ensure_recovers_from_cleared_storage()
 
 print("runtime_spec: OK")
