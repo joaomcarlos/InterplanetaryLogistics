@@ -67,7 +67,7 @@ local function layout(player)
     end
     return widths
   end
-  local fleet_widths = compact and {120, 80, 85, 85, 55, 165, 108} or {180, 105, 125, 125, 75, 300, 116}
+  local fleet_widths = compact and {120, 80, 130, 55, 165, 108} or {180, 105, 200, 75, 300, 116}
   local request_widths = compact and {120, 75, 80, 50, 50, 95, 50, 80} or {180, 100, 120, 70, 70, 110, 65, 100}
   local destination_widths = compact and {110, 55, 55, 230, 140} or {150, 75, 75, 420, 160}
   local history_widths = compact and {45, 120, 55, 115, 75, 55, 55, 160, 40} or {60, 215, 70, 205, 105, 70, 70, 300, 40}
@@ -234,6 +234,20 @@ local function platform_task(snapshot, state)
     Util.location_rich(request.source) or "?", " → ", Util.location_rich(request.destination) or "?"}
 end
 
+-- Route cell: docked ships show their location icon; in-transit ships show
+-- origin → destination icons. Destination also follows the location when a
+-- task is active so a docked ship shows "nauvis → vulcanus" as its next leg.
+local function fleet_route_caption(snapshot)
+  local origin = snapshot.location or snapshot.origin
+  local destination = snapshot.destination
+  if origin and destination and origin ~= destination then
+    return {"", Util.location_rich(origin), " → ", Util.location_rich(destination)}
+  end
+  local single = Util.location_rich(origin or destination)
+  if single then return {"", single} end
+  return {"il-gui.in-transit"}
+end
+
 local function build_platform_rows(parent, player, enrolled)
   local state = State.ensure()
   local widths = layout(player).fleet
@@ -252,19 +266,18 @@ local function build_platform_rows(parent, player, enrolled)
     set_width(status, widths[2])
     status.style.font_color = status_colors[snapshot.status] or status_colors.idle
 
-    local location = row.add({type = "label", name = "il-fleet-location-" .. platform.index, caption = Util.location_rich(snapshot.location) or {"il-gui.in-transit"}})
-    set_width(location, widths[3])
-    local destination = row.add({type = "label", name = "il-fleet-destination-" .. platform.index, caption = Util.location_rich(snapshot.destination) or "—"})
-    set_width(destination, widths[4])
+    local route = row.add({type = "label", name = "il-fleet-route-" .. platform.index, caption = fleet_route_caption(snapshot)})
+    set_width(route, widths[3])
+    route.style.single_line = true
     local eta = row.add({type = "label", name = "il-fleet-eta-" .. platform.index, caption = snapshot.eta and Util.format_ticks(snapshot.eta) or "—"})
-    set_width(eta, widths[5])
+    set_width(eta, widths[4])
     if snapshot.eta then eta.style.font_color = accent_colors.green end
     local task = row.add({type = "label", name = "il-fleet-task-" .. platform.index, caption = platform_task(snapshot, state), tooltip = snapshot.reason})
-    set_width(task, widths[6])
+    set_width(task, widths[5])
     task.style.single_line = true
 
     local controls = row.add({type = "flow", direction = "horizontal"})
-    set_width(controls, widths[7])
+    set_width(controls, widths[6])
     controls.style.horizontal_spacing = 4
     if enrolled then
       add_icon_button(controls, {
@@ -311,8 +324,8 @@ local function build_fleet(parent, player)
   })
   local widths = layout(player).fleet
   add_columns(parent, {
-    {{"il-gui.ship"}, widths[1]}, {{"il-gui.status"}, widths[2]}, {{"il-gui.location"}, widths[3]},
-    {{"il-gui.destination"}, widths[4]}, {{"il-gui.eta"}, widths[5]}, {{"il-gui.current-task"}, widths[6]}, {{"il-gui.controls"}, widths[7]}
+    {{"il-gui.ship"}, widths[1]}, {{"il-gui.status"}, widths[2]}, {{"il-gui.route"}, widths[3]},
+    {{"il-gui.eta"}, widths[4]}, {{"il-gui.current-task"}, widths[5]}, {{"il-gui.controls"}, widths[6]}
   })
   local scroll = parent.add({type = "scroll-pane", name = "il-fleet-list", direction = "vertical", style = "il_scroll_pane"})
   scroll.style.horizontally_stretchable = true
@@ -1264,10 +1277,8 @@ function Gui.refresh_player(player)
       element.style.font_color = status_colors[snapshot.status] or status_colors.idle
       return
     end
-    id = tonumber(string.match(element.name or "", "^il%-fleet%-location%-(%d+)$"))
-    if id then element.caption = Util.location_rich((state.platform_status[id] or {}).location) or {"il-gui.in-transit"}; return end
-    id = tonumber(string.match(element.name or "", "^il%-fleet%-destination%-(%d+)$"))
-    if id then element.caption = Util.location_rich((state.platform_status[id] or {}).destination) or "—"; return end
+    id = tonumber(string.match(element.name or "", "^il%-fleet%-route%-(%d+)$"))
+    if id then element.caption = fleet_route_caption(state.platform_status[id] or {}); return end
     id = tonumber(string.match(element.name or "", "^il%-fleet%-eta%-(%d+)$"))
     if id then
       local eta = (state.platform_status[id] or {}).eta

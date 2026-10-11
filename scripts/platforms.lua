@@ -201,6 +201,8 @@ local function platform_snapshot(platform, force_index)
   local request_id = shipment and shipment.demand_id
   local request = request_id and state.demands[request_id]
   local location = platform.space_location and platform.space_location.name
+  local last_visited = platform.last_visited_space_location
+    and platform.last_visited_space_location.name
   local distance = platform.distance
   local changed = not previous or previous.location ~= location or previous.distance ~= distance
     or previous.request_id ~= request_id
@@ -229,6 +231,7 @@ local function platform_snapshot(platform, force_index)
     enrolled = Platforms.is_enrolled(force_index, platform.index),
     status = status,
     location = location,
+    origin = last_visited or location,
     destination = destination,
     eta = destination and Platforms.estimate_ticks_to(platform, destination) or nil,
     request_id = request_id,
