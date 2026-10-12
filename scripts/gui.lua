@@ -104,6 +104,40 @@ local function find_descendant(root, name)
   return nil
 end
 
+-- Detects elements whose state changed while the view was hidden or between
+-- structural refreshes. Returns "shipments" | "destinations" | "history" or nil.
+local function element_staleness(element, state)
+  local name = element.name or ""
+  local id = tonumber(string.match(name, "^il%-shipment%-status%-(%d+)$"))
+  if id then
+    local shipment = state.shipments[id]
+    if not shipment or shipment.status == "completed" then return "shipments" end
+    return nil
+  end
+  local planet = string.match(name, "^il%-destination%-delivered%-(.*)$")
+  if planet then
+    local metrics = (state.destination_metrics or {})[planet]
+    if element.caption ~= tostring(metrics and metrics.delivered or 0) then return "destinations" end
+    return nil
+  end
+  planet = string.match(name, "^il%-destination%-provided%-(.*)$")
+  if planet then
+    local metrics = (state.source_metrics or {})[planet]
+    if element.caption ~= tostring(metrics and metrics.provided or 0) then return "destinations" end
+    return nil
+  end
+  planet = string.match(name, "^il%-history%-planet%-(.*)$")
+  if planet then
+    local dm = (state.destination_metrics or {})[planet]
+    local sm = (state.source_metrics or {})[planet]
+    local tags = element.tags or {}
+    if tags.il_d ~= (dm and dm.delivered or 0) or tags.il_p ~= (sm and sm.provided or 0) then
+      return "history"
+    end
+  end
+  return nil
+end
+
 local function visit_descendants(root, visitor)
   if not root or not root.valid then return end
   visitor(root)
@@ -1239,6 +1273,23 @@ function Gui.set_view(player, view)
     local element = find_descendant(frame, element_name)
     if element then element.visible = name == view end
   end
+  refresh_summaries(frame, player)
+  -- The 1s refresh only walks the visible view; anything that went stale
+  -- while hidden is rebuilt once here on switch (scroll position survives
+  -- unless the list actually changed).
+  local view_root = find_descendant(frame, view_names[view])
+  if view_root then
+    local stale_shipments, stale_destinations, stale_history = false, false, false
+    visit_descendants(view_root, function(element)
+      local stale = element_staleness(element, state)
+      if stale == "shipments" then stale_shipments = true
+      elseif stale == "destinations" then stale_destinations = true
+      elseif stale == "history" then stale_history = true end
+    end)
+    if stale_shipments then Gui.refresh_shipments_structure(player) end
+    if stale_destinations then Gui.refresh_destinations_structure(player) end
+    if stale_history then Gui.refresh_history_structure(player) end
+  end
   local nav = find_descendant(frame, "il-navigation")
   if nav then
     for _, name in ipairs(view_order) do
@@ -1280,10 +1331,18 @@ function Gui.refresh_player(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
   local state = State.ensure()
+  -- Only walk the visible view; hidden views refresh on open via set_view's
+  -- refresh_summaries call and their own structural rebuilds.
+  local view = (state.gui_tabs[player.index] or {}).view or "fleet"
+  local root = find_descendant(frame, view_names[view]) or frame
   local stale_shipment_row = false
   local stale_destination_stats = false
   local stale_history_stats = false
-  visit_descendants(frame, function(element)
+  visit_descendants(root, function(element)
+    local stale = element_staleness(element, state)
+    if stale == "shipments" then stale_shipment_row = true
+    elseif stale == "destinations" then stale_destination_stats = true
+    elseif stale == "history" then stale_history_stats = true end
     local id = tonumber(string.match(element.name or "", "^il%-fleet%-state%-(%d+)$"))
     if id then
       local snapshot = state.platform_status[id] or {status = "idle"}
@@ -1337,8 +1396,6 @@ function Gui.refresh_player(player)
       if shipment and shipment.status ~= "completed" then
         element.caption = {"il-gui.shipment-status-" .. shipment.status}
         element.style.font_color = status_colors[shipment.status] or status_colors.idle
-      else
-        stale_shipment_row = true
       end
       return
     end
@@ -1392,28 +1449,6 @@ function Gui.refresh_player(player)
     if id and state.shipments[id] then
       local s = state.shipments[id]
       element.caption = {"", tostring(s.allocated_amount or 0), " / ", tostring(s.amount or 0)}
-      return
-    end
-    local planet = string.match(element.name or "", "^il%-destination%-delivered%-(.*)$")
-    if planet then
-      local metrics = (state.destination_metrics or {})[planet]
-      if element.caption ~= tostring(metrics and metrics.delivered or 0) then stale_destination_stats = true end
-      return
-    end
-    planet = string.match(element.name or "", "^il%-destination%-provided%-(.*)$")
-    if planet then
-      local metrics = (state.source_metrics or {})[planet]
-      if element.caption ~= tostring(metrics and metrics.provided or 0) then stale_destination_stats = true end
-      return
-    end
-    planet = string.match(element.name or "", "^il%-history%-planet%-(.*)$")
-    if planet then
-      local dm = (state.destination_metrics or {})[planet]
-      local sm = (state.source_metrics or {})[planet]
-      local tags = element.tags or {}
-      if tags.il_d ~= (dm and dm.delivered or 0) or tags.il_p ~= (sm and sm.provided or 0) then
-        stale_history_stats = true
-      end
       return
     end
   end)
