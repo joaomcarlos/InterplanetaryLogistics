@@ -203,7 +203,7 @@ local function test_scheduler_prioritizes_routing_over_fleet_refresh()
   assert_equal(Scheduler.step(120, 120, constants, callbacks), "routing", "scan boundary should prioritize routing")
   assert_equal(calls.start_scan, 1, "scan should start even while fleet refresh is active")
   assert_equal(calls.step_scan, 1, "scan should advance on its starting tick")
-  assert_equal(calls.step_fleet_refresh, nil, "fleet refresh must yield to routing")
+  assert_equal(calls.step_fleet_refresh, 1, "fleet refresh is a maintenance lane and must not starve during routing")
 
   callbacks.step_scan = function()
     calls.step_scan = calls.step_scan + 1
@@ -212,10 +212,11 @@ local function test_scheduler_prioritizes_routing_over_fleet_refresh()
   end
   assert_equal(Scheduler.step(121, 120, constants, callbacks), "routing", "scan completion should remain on routing lane")
   assert_equal(calls.start_process, 1, "scan completion should start request processing")
-  assert_equal(calls.step_fleet_refresh, nil, "fleet refresh must remain paused during processing")
+  assert_equal(calls.step_fleet_refresh, 2, "fleet refresh keeps stepping during processing")
 
   assert_equal(Scheduler.step(122, 120, constants, callbacks), "routing", "request processing should keep routing priority")
   assert_equal(calls.step_process, 1, "request processing should advance")
+  assert_equal(calls.step_fleet_refresh, 3, "fleet refresh keeps stepping while requests process")
 end
 
 local function test_construction_alert_surface_uses_target()
@@ -2090,7 +2091,7 @@ local function test_scheduler_processes_chest_dirty_before_scan()
   assert_equal(calls.step_chest_dirty, 1, "chest dirty should advance first")
   assert_equal(calls.start_scan, nil, "scan must not start while chest dirty is active")
   assert_equal(calls.step_scan, nil, "scan must not advance while chest dirty is active")
-  assert_equal(calls.step_fleet_refresh, nil, "fleet refresh must yield to chest dirty")
+  assert_equal(calls.step_fleet_refresh, 1, "fleet refresh is a maintenance lane and must not starve during dirty work")
 end
 
 local function test_chest_filter_zero_count_retires_demand()

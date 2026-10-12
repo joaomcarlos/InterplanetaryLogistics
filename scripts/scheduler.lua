@@ -41,10 +41,6 @@ function Scheduler.step(event_tick, scan_interval, constants, callbacks)
     shipment_execution_work = true
   end
 
-  if primary then return primary end
-  if shipment_dirty_work then return "shipment-dirty" end
-  if shipment_execution_work then return "shipment-execution" end
-
   -- Shipment maintenance has its own bounded cadence and continues while a
   -- long demand scan or routing pass is active.
   if event_tick % constants.monitor_interval == constants.shipment_maintenance_offset
@@ -52,6 +48,27 @@ function Scheduler.step(event_tick, scan_interval, constants, callbacks)
     and not callbacks.shipment_maintenance_active() then
     callbacks.start_shipment_maintenance()
   end
+
+  -- Fleet/GUI refreshes are single-unit-per-tick user-visible lanes. They
+  -- start and step unconditionally: placed below the dirty/routing lanes they
+  -- starved whenever a save kept those busy, which froze the open dashboard.
+  local maintenance = maintenance_active(callbacks)
+  if event_tick % constants.monitor_interval == constants.fleet_refresh_offset then
+    if not maintenance then callbacks.start_fleet_refresh() end
+  elseif event_tick % constants.gui_refresh_interval == constants.gui_refresh_offset then
+    if not maintenance then callbacks.start_gui_refresh() end
+  end
+  if callbacks.shipment_maintenance_active and callbacks.shipment_maintenance_active() then
+    callbacks.step_shipment_maintenance(constants.shipment_maintenance_work_per_tick)
+  elseif callbacks.fleet_refresh_active() then
+    callbacks.step_fleet_refresh(constants.fleet_work_per_tick)
+  elseif callbacks.gui_refresh_active() then
+    callbacks.step_gui_refresh(constants.gui_work_per_tick)
+  end
+
+  if primary then return primary end
+  if shipment_dirty_work then return "shipment-dirty" end
+  if shipment_execution_work then return "shipment-execution" end
 
   local routing = routing_active(callbacks)
   local scan_due = scan_interval > 0 and event_tick % scan_interval == 0
@@ -68,26 +85,9 @@ function Scheduler.step(event_tick, scan_interval, constants, callbacks)
     else
       callbacks.step_process(constants.process_work_per_tick)
     end
-    if callbacks.shipment_maintenance_active and callbacks.shipment_maintenance_active() then
-      callbacks.step_shipment_maintenance(constants.shipment_maintenance_work_per_tick)
-    end
     return "routing"
   end
 
-  local maintenance = maintenance_active(callbacks)
-  if event_tick % constants.monitor_interval == constants.fleet_refresh_offset then
-    if not maintenance then callbacks.start_fleet_refresh() end
-  elseif event_tick % constants.gui_refresh_interval == constants.gui_refresh_offset then
-    if not maintenance then callbacks.start_gui_refresh() end
-  end
-
-  if callbacks.shipment_maintenance_active and callbacks.shipment_maintenance_active() then
-    callbacks.step_shipment_maintenance(constants.shipment_maintenance_work_per_tick)
-  elseif callbacks.fleet_refresh_active() then
-    callbacks.step_fleet_refresh(constants.fleet_work_per_tick)
-  elseif callbacks.gui_refresh_active() then
-    callbacks.step_gui_refresh(constants.gui_work_per_tick)
-  end
   return "maintenance"
 end
 
