@@ -19,7 +19,7 @@ return {
   monitor_interval = 60,
   shipment_maintenance_offset = 10,
   fleet_refresh_offset = 30,
-  gui_refresh_interval = 120,
+  gui_refresh_interval = 60,
   gui_refresh_offset = 15,
   scan_work_per_tick = 1,
   chest_dirty_work_per_tick = 8,
