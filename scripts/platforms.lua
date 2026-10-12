@@ -682,6 +682,21 @@ function Platforms.finish_shipment(shipment_id, status, reason)
   if demand then
     demand.active_shipment_amount = State.active_shipment_amount(demand_id)
     demand.unplanned_amount = math.max(0, (demand.observed_shortage or demand.amount or 0) - demand.active_shipment_amount)
+    demand.source = nil
+    local remaining_ids = {}
+    for remaining_id in pairs(state.shipments_by_demand[demand_id] or {}) do
+      remaining_ids[#remaining_ids + 1] = remaining_id
+    end
+    table.sort(remaining_ids)
+    for _, remaining_id in ipairs(remaining_ids) do
+      local remaining = state.shipments[remaining_id]
+      if remaining and remaining.status ~= "completed" and remaining.status ~= "failed"
+        and remaining.status ~= "cancelled"
+        and remaining.pickup_legs and remaining.pickup_legs[1] then
+        demand.source = remaining.pickup_legs[1].source
+        break
+      end
+    end
   end
   -- Update source metrics
   local metric_item_key = tostring(shipment.item) .. "|" .. tostring(shipment.quality or "normal")
