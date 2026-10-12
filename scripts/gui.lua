@@ -296,6 +296,11 @@ local function build_platform_rows(parent, player, enrolled)
     local controls = row.add({type = "flow", direction = "horizontal"})
     set_width(controls, widths[6])
     controls.style.horizontal_spacing = 4
+    add_icon_button(controls, {
+      name = "il-platform-view-" .. platform.index,
+      sprite = "utility/map",
+      tooltip = {"il-gui.view-platform"}
+    })
     if enrolled then
       add_icon_button(controls, {
         name = "il-platform-override-" .. platform.index,

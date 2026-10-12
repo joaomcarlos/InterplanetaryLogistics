@@ -389,6 +389,19 @@ local function on_gui_click(event)
     Gui.refresh_fleet_structure(player)
     return
   end
+  id = parse_id(element.name, "il%-platform%-view%-")
+  if id then
+    local platform = Util.get_platform(player.force, id)
+    if platform then
+      player.set_controller{
+        type = defines.controllers.remote,
+        position = platform.hub and platform.hub.position or {x = 0, y = 0},
+        surface = platform.surface,
+        start_zoom = 0.5
+      }
+    end
+    return
+  end
 end
 
 local function initialize()
