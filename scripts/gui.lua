@@ -104,40 +104,6 @@ local function find_descendant(root, name)
   return nil
 end
 
--- Detects elements whose state changed while the view was hidden or between
--- structural refreshes. Returns "shipments" | "destinations" | "history" or nil.
-local function element_staleness(element, state)
-  local name = element.name or ""
-  local id = tonumber(string.match(name, "^il%-shipment%-status%-(%d+)$"))
-  if id then
-    local shipment = state.shipments[id]
-    if not shipment or shipment.status == "completed" then return "shipments" end
-    return nil
-  end
-  local planet = string.match(name, "^il%-destination%-delivered%-(.*)$")
-  if planet then
-    local metrics = (state.destination_metrics or {})[planet]
-    if element.caption ~= tostring(metrics and metrics.delivered or 0) then return "destinations" end
-    return nil
-  end
-  planet = string.match(name, "^il%-destination%-provided%-(.*)$")
-  if planet then
-    local metrics = (state.source_metrics or {})[planet]
-    if element.caption ~= tostring(metrics and metrics.provided or 0) then return "destinations" end
-    return nil
-  end
-  planet = string.match(name, "^il%-history%-planet%-(.*)$")
-  if planet then
-    local dm = (state.destination_metrics or {})[planet]
-    local sm = (state.source_metrics or {})[planet]
-    local tags = element.tags or {}
-    if tags.il_d ~= (dm and dm.delivered or 0) or tags.il_p ~= (sm and sm.provided or 0) then
-      return "history"
-    end
-  end
-  return nil
-end
-
 local function visit_descendants(root, visitor)
   if not root or not root.valid then return end
   visitor(root)
@@ -1203,13 +1169,87 @@ local function refresh_request_detail(frame, player)
   end
 end
 
+-- Detects elements or row containers whose state changed while the view was
+-- hidden or between structural refreshes. Row containers hold only row frames
+-- (or one empty-state label), so a child-count mismatch catches added/removed
+-- rows that per-element checks cannot see. Returns the view kind to rebuild:
+-- "fleet" | "requests" | "shipments" | "destinations" | "history" or nil.
+local function element_staleness(element, state, player)
+  local name = element.name or ""
+  local expected_rows, kind
+  if name == "il-fleet-delivery-rows" then expected_rows, kind = #platform_list(player, true), "fleet"
+  elseif name == "il-fleet-other-rows" then expected_rows, kind = #platform_list(player, false), "fleet"
+  elseif name == "il-request-active-rows" then expected_rows, kind = #request_list(player, false), "requests"
+  elseif name == "il-request-attention-rows" then expected_rows, kind = #request_list(player, true), "requests"
+  elseif name == "il-shipment-list-rows" then expected_rows, kind = #shipment_list(player), "shipments"
+  elseif name == "il-destination-list-rows" then expected_rows, kind = #destination_list(player), "destinations"
+  elseif name == "il-history-list-rows" then
+    expected_rows, kind = 0, "history"
+    for index = #state.history, 1, -1 do
+      local request = state.demands[state.history[index].id]
+      if request and request.force_index == player.force.index then
+        expected_rows = expected_rows + 1
+      end
+    end
+  end
+  if expected_rows and #(element.children or {}) ~= math.max(1, expected_rows) then
+    return kind
+  end
+  local id = tonumber(string.match(name, "^il%-shipment%-status%-(%d+)$"))
+  if id then
+    local shipment = state.shipments[id]
+    if not shipment or shipment.status == "completed" then return "shipments" end
+    return nil
+  end
+  local planet = string.match(name, "^il%-destination%-delivered%-(.*)$")
+  if planet then
+    local metrics = (state.destination_metrics or {})[planet]
+    if element.caption ~= tostring(metrics and metrics.delivered or 0) then return "destinations" end
+    return nil
+  end
+  planet = string.match(name, "^il%-destination%-provided%-(.*)$")
+  if planet then
+    local metrics = (state.source_metrics or {})[planet]
+    if element.caption ~= tostring(metrics and metrics.provided or 0) then return "destinations" end
+    return nil
+  end
+  planet = string.match(name, "^il%-history%-planet%-(.*)$")
+  if planet then
+    local dm = (state.destination_metrics or {})[planet]
+    local sm = (state.source_metrics or {})[planet]
+    local tags = element.tags or {}
+    if tags.il_d ~= (dm and dm.delivered or 0) or tags.il_p ~= (sm and sm.provided or 0) then
+      return "history"
+    end
+  end
+  return nil
+end
+
+-- Collect the set of views that need a structural rebuild under root.
+local function stale_views_in(root, state, player)
+  local stale = {}
+  visit_descendants(root, function(element)
+    local kind = element_staleness(element, state, player)
+    if kind then stale[kind] = true end
+  end)
+  return stale
+end
+
+local function rebuild_stale_views(stale, player)
+  if stale.fleet then Gui.refresh_fleet_structure(player) end
+  if stale.requests then Gui.refresh_request_structure(player) end
+  if stale.shipments then Gui.refresh_shipments_structure(player) end
+  if stale.destinations then Gui.refresh_destinations_structure(player) end
+  if stale.history then Gui.refresh_history_structure(player) end
+end
+
 function Gui.refresh_fleet_structure(player)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
   refill(frame, "il-fleet-delivery-rows", build_platform_rows, player, true)
   refill(frame, "il-fleet-other-rows", build_platform_rows, player, false)
   refresh_summaries(frame, player)
-  Gui.refresh_player(player)
+  Gui.refresh_player(player, true)
 end
 
 function Gui.refresh_request_structure(player)
@@ -1219,7 +1259,7 @@ function Gui.refresh_request_structure(player)
   refill(frame, "il-request-attention-rows", build_request_rows, player, true)
   refresh_summaries(frame, player)
   refresh_request_detail(frame, player)
-  Gui.refresh_player(player)
+  Gui.refresh_player(player, true)
 end
 
 function Gui.refresh_destinations_structure(player)
@@ -1243,7 +1283,7 @@ function Gui.refresh_shipments_structure(player)
   if not frame or not frame.valid then return end
   refill(frame, "il-shipment-list-rows", build_shipment_rows, player)
   refresh_summaries(frame, player)
-  Gui.refresh_player(player)
+  Gui.refresh_player(player, true)
 end
 
 function Gui.refresh_structure(player)
@@ -1258,7 +1298,7 @@ function Gui.refresh_structure(player)
   refill(frame, "il-history-list-rows", build_history_rows, player)
   refresh_summaries(frame, player)
   refresh_request_detail(frame, player)
-  Gui.refresh_player(player)
+  Gui.refresh_player(player, true)
 end
 
 function Gui.set_view(player, view)
@@ -1278,18 +1318,7 @@ function Gui.set_view(player, view)
   -- while hidden is rebuilt once here on switch (scroll position survives
   -- unless the list actually changed).
   local view_root = find_descendant(frame, view_names[view])
-  if view_root then
-    local stale_shipments, stale_destinations, stale_history = false, false, false
-    visit_descendants(view_root, function(element)
-      local stale = element_staleness(element, state)
-      if stale == "shipments" then stale_shipments = true
-      elseif stale == "destinations" then stale_destinations = true
-      elseif stale == "history" then stale_history = true end
-    end)
-    if stale_shipments then Gui.refresh_shipments_structure(player) end
-    if stale_destinations then Gui.refresh_destinations_structure(player) end
-    if stale_history then Gui.refresh_history_structure(player) end
-  end
+  if view_root then rebuild_stale_views(stale_views_in(view_root, state, player), player) end
   local nav = find_descendant(frame, "il-navigation")
   if nav then
     for _, name in ipairs(view_order) do
@@ -1327,22 +1356,19 @@ function Gui.select_request(player, request_id)
   end
 end
 
-function Gui.refresh_player(player)
+function Gui.refresh_player(player, skip_rebuilds)
   local frame = player.gui.screen[dashboard_name]
   if not frame or not frame.valid then return end
   local state = State.ensure()
   -- Only walk the visible view; hidden views refresh on open via set_view's
-  -- refresh_summaries call and their own structural rebuilds.
+  -- stale check plus refresh_summaries. skip_rebuilds prevents recursion:
+  -- refresh_*_structure helpers call refresh_player after refilling.
   local view = (state.gui_tabs[player.index] or {}).view or "fleet"
   local root = find_descendant(frame, view_names[view]) or frame
-  local stale_shipment_row = false
-  local stale_destination_stats = false
-  local stale_history_stats = false
+  local stale_views = {}
   visit_descendants(root, function(element)
-    local stale = element_staleness(element, state)
-    if stale == "shipments" then stale_shipment_row = true
-    elseif stale == "destinations" then stale_destination_stats = true
-    elseif stale == "history" then stale_history_stats = true end
+    local stale = element_staleness(element, state, player)
+    if stale then stale_views[stale] = true end
     local id = tonumber(string.match(element.name or "", "^il%-fleet%-state%-(%d+)$"))
     if id then
       local snapshot = state.platform_status[id] or {status = "idle"}
@@ -1452,20 +1478,10 @@ function Gui.refresh_player(player)
       return
     end
   end)
-  -- Rows for completed or deleted shipments linger otherwise: rebuild the
-  -- list so the board stays limited to live and failed shipments.
-  if stale_shipment_row then
-    Gui.refresh_shipments_structure(player)
-  end
-  -- Destination stats change when shipments complete; rebuild so delivered/
-  -- provided counts and top items stay current.
-  if stale_destination_stats then
-    Gui.refresh_destinations_structure(player)
-  end
-  -- Completions also grow the history item/planet stats strip.
-  if stale_history_stats then
-    Gui.refresh_history_structure(player)
-  end
+  -- Rebuild any view whose rows or stats went stale (new/completed rows,
+  -- changed metric strips). Row containers hold only row frames or one
+  -- empty-state label, so count mismatches catch adds/removals too.
+  if not skip_rebuilds then rebuild_stale_views(stale_views, player) end
 end
 
 function Gui.refresh_open()
