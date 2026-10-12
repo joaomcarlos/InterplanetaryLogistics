@@ -965,7 +965,11 @@ function Platforms.maintain_shipment(shipment_id)
     return
   end
   if location ~= shipment.destination and not has_shipment_destination_record(platform, shipment) then
-    Platforms.finish_shipment(shipment_id, "failed", "shipment destination schedule record is missing")
+    Platforms.finish_shipment(shipment_id, "failed",
+      (shipment.platform_name or "the ship")
+        .. "'s temporary stop at "
+        .. (Util.location_display(shipment.destination) or "the destination")
+        .. " was removed from its schedule — likely edited manually; the undelivered remainder is being replanned")
     return
   end
 
