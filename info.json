@@ -2,7 +2,7 @@
   "name": "interplanetary-logistics",
   "version": "1.0.0",
   "title": "Interplanetary Logistics",
-  "author": "joaomcarlos",
+  "author": "TheSilentWarrior",
   "factorio_version": "2.1",
   "dependencies": [
     "base >= 2.1.0",
