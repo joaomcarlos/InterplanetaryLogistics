@@ -16,6 +16,7 @@ build/
 out/
 target/
 node_modules/
+publish/
 .superpowers/
 
 #.agents

@@ -1,187 +1,30 @@
 # Interplanetary Logistics
 
-[![Factorio 2.1](https://img.shields.io/badge/Factorio-2.1-EA5B0C?logo=factorio&logoColor=white)](https://www.factorio.com/)
-[![Space Age required](https://img.shields.io/badge/Space%20Age-required-6F4E37)](https://www.factorio.com/space-age/content)
-![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-2F80ED)
-![Lua 5.2](https://img.shields.io/badge/Lua-5.2-2C2D72?logo=lua&logoColor=white)
+Short on supplies? Your space platforms ferry shortages between planets.
+Local logistics tries first; whatever it can't cover gets delivered by a
+ship already flying that route.
 
-**Turn local logistics shortages into automated deliveries between planets.**
+- **Place an Interplanetary Requester Chest** and set its requests like a
+  vanilla requester chest. If the planet's logistics can't fill it, the
+  shortage becomes a delivery request.
+- **Enroll your space platforms** from the dashboard. A ship only flies
+  legs already on its own permanent route.
+- **Open the dashboard** with the shortcut-bar button or `Alt+I`. Watch
+  the fleet, approve or deny requests, inspect every shipment leg by leg.
+- **Approve or let it ride.** Requests auto-approve after a delay you set;
+  deny or prioritize any of them yourself.
 
-Interplanetary Logistics extends Factorio's requester workflow across the solar system. It detects items that cannot be supplied locally, finds stock on another planet, assigns an eligible space platform, and manages the temporary pickup and delivery stops needed to complete the transfer.
+Works with construction too: ghosts and unbuilt blueprints on a planet
+count as demand and get real materials shipped in.
 
-Permanent platform schedules are never replaced or rewritten.
+The dashboard keeps a fleet monitor, the live request queue, per-ship
+shipment progress, destination coverage, and a delivery history, so you
+can see what moved, from where, and when it lands.
 
-![Fleet Monitor dashboard](mockups/fleet.png)
+Your ships' permanent schedules are never rewritten. Temporary stops are
+added for each pickup and delivery, then cleaned up. Safe to add to
+existing saves.
 
-## Highlights
+Requires Factorio 2.1 and the Space Age expansion.
 
-- **Local-first requests** — standard logistic robots get the first opportunity to satisfy each requester chest.
-- **Automated interplanetary routing** — unresolved shortages are matched with available stock and an eligible enrolled platform.
-- **Construction support** — construction alerts are aggregated into destination-specific material requests.
-- **Human-in-the-loop controls** — approve, deny, retry, or prioritize requests from the dashboard; untouched requests can auto-approve.
-- **Fleet-aware dispatching** — platforms are ranked by route preference and earliest arrival, while sources are ranked by stock coverage and historical reliability.
-- **Safe scheduling** — only temporary records are added to platform schedules, then removed after delivery or failure.
-- **Exact stock checks** — source planning reads Factorio's current exact item and quality aggregates; inventory contention remains vanilla logistics' responsibility.
-- **Native Factorio interface** — responsive dashboards, compact list views, clear status states, tooltips, and useful empty states.
-
-## How it works
-
-```text
-Local shortage
-      │
-      ▼
-Request created ──► approval ──► source selected ──► platform assigned
-                                                            │
-                                                            ▼
-                                               pickup ──► delivery ──► cleanup
-```
-
-1. The mod scans Interplanetary Requester Chests and construction alerts.
-2. Any shortage left after local logistics is published as a trade request.
-3. Approved requests are matched with exact source stock and an eligible platform route.
-4. An enrolled platform whose permanent route includes both planets receives temporary pickup and delivery stops.
-5. After the transfer finishes—or fails—the temporary stops and isolated logistic sections are cleaned up.
-
-## Dashboard
-
-Open the dashboard from the shortcut bar or press <kbd>Alt</kbd> + <kbd>I</kbd>.
-
-| View | Purpose |
-| --- | --- |
-| **Fleet Monitor** | See Delivery Fleet and Other Platforms, current work, status, route, destination, and ETA. |
-| **Requests** | Review active and attention-needed shortages, change priority, and approve, deny, or retry dispatches. |
-| **Shipments** | Inspect each ship's pickup legs, progress, status, and link back to its Trade Request. |
-| **Destinations** | Inspect registered requester chests, their planets, positions, and logistic-network connectivity. |
-| **History** | Review recent dispatch decisions and delivery outcomes. |
-
-<details>
-<summary><strong>View more dashboard screens</strong></summary>
-
-### Requests
-
-![Trade Requests dashboard](mockups/requests.png)
-
-### Destinations
-
-![Destinations dashboard](mockups/destinations.png)
-
-### History
-
-![Transfer History dashboard](mockups/history.png)
-
-</details>
-
-## Requirements
-
-- Factorio **2.1** or newer
-- Space Age expansion **2.1** or newer
-
-## Installation
-
-### Factorio mod directory
-
-1. Download or clone this repository.
-2. Place it in your Factorio `mods` directory as `interplanetary-logistics_0.2.0`, or package that folder as `interplanetary-logistics_0.2.0.zip`.
-3. Enable **Interplanetary Logistics** in Factorio's **Mods** menu.
-4. Start or load a Space Age game.
-
-Typical mod directory locations:
-
-| Platform | Path |
-| --- | --- |
-| Windows | `%APPDATA%\Factorio\mods` |
-| Linux | `~/.factorio/mods` |
-| macOS | `~/Library/Application Support/factorio/mods` |
-
-## Quick start
-
-1. Craft and place an **Interplanetary Requester Chest**.
-2. Configure its requester slots normally.
-3. Connect it to a logistic network shared with a cargo landing pad.
-4. Open the dashboard with the shortcut bar button or <kbd>Alt</kbd> + <kbd>I</kbd>.
-5. Enroll the space platforms that the network may use for deliveries.
-6. Ensure each enrolled platform's permanent schedule includes the intended source and destination planets.
-7. Optionally pin a preferred platform, require a circuit-ready signal, or adjust request priorities.
-
-> [!IMPORTANT]
-> A platform is eligible only when explicitly enrolled and its existing permanent route contains both the source and destination planets.
-
-## Configuration
-
-Settings are available under **Settings → Mod settings → Map**.
-
-| Setting | Default | Description |
-| --- | ---: | --- |
-| Auto-approve delay | 10 seconds | Time before an untouched request is approved automatically. Set to `0` for immediate approval. |
-| Network scan interval | 120 ticks | Interval between requester chest, construction alert, and transfer scans. |
-| Require ready signal | Off | Makes temporary pickup stops wait for a configured virtual signal as well as the requested cargo. |
-| Ready virtual signal | Green signal | Signal used to release a platform from a temporary pickup stop. |
-
-Requests support **low**, **normal**, and **high** dispatch priority. A platform may also be pinned as the preferred ship for every source/destination pair in its permanent route.
-
-## Design guarantees
-
-- Permanent platform schedule records are never mutated.
-- Existing onboard cargo is preserved as return cargo; only the requested quantity is unloaded.
-- Denied requests remain available for review and are not raised repeatedly.
-- Automatic and manual refreshes preserve the current dashboard view, selected request, and scroll position.
-- Delivery Fleet and Other Platforms remain separate and are sorted by ship name.
-- Routing decisions use deterministic ordering for multiplayer safety.
-
-## Development
-
-The mod targets Factorio's modified Lua 5.2 runtime. Runtime modules live in `scripts/`; tests use lightweight Factorio API mocks and run in plain Lua.
-
-```shell
-lua tests/runtime_spec.lua
-lua tests/data_stage_spec.lua
-python tests/locale_spec.py
-python tests/live_headless_smoke_spec.py
-```
-
-All checks should finish with an `OK` result.
-
-### Live headless Factorio smoke test
-
-Use `tests/live_headless_smoke.py` when a change needs a real Factorio control-stage run. The runner copies the supplied save, packages the current working tree into an isolated mod directory, starts Factorio only through the disposable wrapper, disables server auto-pause, chooses isolated game/RCON ports, and cleans the wrapper-owned files after the run. It never opens, changes, or attaches to the original save or an existing desktop Factorio process.
-
-For a strict Shipment regression fixture:
-
-1. Make a disposable copy of a Space Age save in the Factorio client.
-2. Use `/editor` to place the requester chest, provider stock, landing pad, and platform route needed for the case. Exit editor mode with **Save and play**, approve a request, and save again while at least one Shipment is `loading` or `delivering`.
-3. Run the copy headlessly (the `x64_/factorio` binary is the native Linux executable):
-
-   ```shell
-   python3 tests/live_headless_smoke.py \
-     --factorio /home/jc/.local/share/Steam/steamapps/common/Factorio/bin/x64_/factorio \
-     --save /absolute/path/to/interplanetary-logistics-live.zip \
-     --prepare-baseline \
-     --speed 32 \
-     --seconds 30
-   ```
-
-The strict runner reads bootstrap status, destination/platform/entity snapshots, game ticks, and each active Shipment's `baseline_count`, then scans the Factorio logs for the reported non-recoverable errors. `--prepare-baseline` pauses the disposable copy, enables the hidden live-test setting through the mod-owned interface, clears `baseline_count` only on existing active Shipments, verifies the intentional `nil`, and resumes the simulation. It never creates or reanimates a Shipment. Omit that flag for an ordinary active-Shipment smoke run. A fixture without an active Shipment fails the strict check; use `--allow-no-active` only without `--prepare-baseline` when you want to verify mod loading, destination discovery, and tick advancement without Shipment coverage. Failed runs retain evidence under `.codex-headless/live-smoke-*`; successful runs remove it unless `--keep-artifacts` is supplied.
-
-## Project structure
-
-```text
-├── control.lua          Runtime entry point and event registration
-├── data.lua             Prototypes and native GUI styles
-├── settings.lua         Runtime-global mod settings
-├── scripts/             Demand, routing, platform, state, and GUI modules
-├── locale/en/           English names, descriptions, and interface text
-├── mockups/             Dashboard reference images
-└── tests/               Runtime, data-stage, and locale checks
-```
-
-## Contributing
-
-Issues and merge requests are welcome. When proposing a change:
-
-1. Keep runtime code compatible with Factorio 2.1 and Lua 5.2.
-2. Add or update tests for behavior changes.
-3. Run the complete verification suite before submitting the change.
-
----
-
-Built for factories whose logistics network no longer fits on one planet.
+[Source on GitHub](https://github.com/joaomcarlos/InterplanetaryLogistics)

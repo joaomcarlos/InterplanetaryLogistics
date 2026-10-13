@@ -116,6 +116,7 @@ Factorio 2.1 Space Age mod that turns exact requester-chest and construction sho
 - Deterministic iteration: sort before iterating when order affects game state (desync safety)
 - Guard all `game.get_player()` calls against nil returns
 - Tests must pass under `lua tests/runtime_spec.lua`, `lua tests/data_stage_spec.lua`, and `python tests/locale_spec.py`
+- Portal releases go through `factorio-prepare` → review → `factorio-publish` (`~/.local/bin`); `publish.json` is the ship whitelist, `publish/` is a gitignored staging artifact, `thumbnail.png` is the listing image. Bump `info.json` + `changelog.txt` and tag `v<version>` per release — republishing a live version is rejected
 
 ## Child DOX Index
 

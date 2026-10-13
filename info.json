@@ -1,6 +1,6 @@
 {
   "name": "interplanetary-logistics",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "title": "Interplanetary Logistics",
   "author": "joaomcarlos",
   "factorio_version": "2.1",
@@ -8,5 +8,5 @@
     "base >= 2.1.0",
     "space-age >= 2.1.0"
   ],
-  "description": "Routes requester-chest and construction-alert shortages through enrolled space platforms."
+  "description": "Space platforms ferry shortages between planets: chest requests and construction needs become deliveries on routes the ships already fly."
 }

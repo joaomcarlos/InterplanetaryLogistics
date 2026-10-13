@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.0
+Date: 2026-10-13
+  Changes:
+    - First portal release. Interplanetary requester chests turn local
+      shortages into deliveries by your enrolled platforms; construction
+      ghosts and unbuilt blueprints count as demand too. Dashboard (Alt+I)
+      shows the fleet, requests, shipments, destinations, and history.
+---------------------------------------------------------------------------------------------------
 Version: 0.2.0
 Date: 31-8-2026
   Compatibility:
